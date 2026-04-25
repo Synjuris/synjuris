@@ -1477,7 +1477,7 @@ LANDING_HTML = """<!DOCTYPE html>
   .features{max-width:900px;margin:0 auto;padding:80px 24px}
   .features h2{font-size:26px;font-weight:700;text-align:center;margin-bottom:10px}
   .features .sub{text-align:center;color:var(--ink3);font-size:15px;margin-bottom:52px}
-  .feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px}
+  .feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px}
   .feature-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px 24px}
   .feature-icon{font-size:28px;margin-bottom:14px}
   .feature-card h3{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:10px}
@@ -1524,24 +1524,82 @@ LANDING_HTML = """<!DOCTYPE html>
 </div>
 
 <section class="features">
-  <h2>What SynJuris does for you</h2>
-  <p class="sub">Built for the reality of representing yourself in family court.</p>
+  <h2>Everything SynJuris does for you</h2>
+  <p class="sub">Built for the reality of representing yourself in court. Not watered down. Not simplified. The real thing.</p>
   <div class="feature-grid">
+
     <div class="feature-card">
       <div class="feature-icon">📁</div>
-      <h3>Every incident — logged, categorized, and ready to show a judge</h3>
-      <p>No more scattered screenshots. Your evidence is organized by legal weight, automatically categorized, and ready to present. Texts, emails, missed visitations — all in one place.</p>
+      <h3>Evidence organizer with legal weight scoring</h3>
+      <p>Every piece of evidence — texts, emails, photos, documents — logged, categorized, and automatically scored by legal significance. Courts weight evidence differently. SynJuris knows that.</p>
     </div>
-    <div class="feature-card">
-      <div class="feature-icon">⏱</div>
-      <h3>Never miss a deadline because life got in the way</h3>
-      <p>SynJuris tracks every filing date, hearing, and court deadline — and warns you before something slips. Missing a deadline can cost you the case. This prevents that.</p>
-    </div>
+
     <div class="feature-card">
       <div class="feature-icon">🚩</div>
-      <h3>When they violate the order — it's documented instantly</h3>
-      <p>Log communications in real time. SynJuris automatically detects and flags harassment, gatekeeping, threats, and order violations as they happen — before you forget the details.</p>
+      <h3>Real-time violation detection</h3>
+      <p>Log a communication and SynJuris automatically scans it for gatekeeping, parental alienation, threats, harassment, order violations, stonewalling, and relocation attempts — flagged before you forget the details.</p>
     </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">⏱</div>
+      <h3>Deadline tracking with overdue alerts</h3>
+      <p>Every filing date, response deadline, and hearing tracked in one place. Overdue items surface immediately. Missing a court deadline can end your case — this prevents that.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🤖</div>
+      <h3>AI legal assistant — trained on your case</h3>
+      <p>Ask anything. The AI knows your evidence, your deadlines, your parties, and your jurisdiction. It answers in plain English, drafts documents, and helps you prepare — all with your actual case facts, not generic advice.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📄</div>
+      <h3>Document generator</h3>
+      <p>Generate motions, declarations, discovery requests, demand letters, parenting plans, and more — pre-filled with your case details and formatted for court. Not templates. Actual drafts.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">⚖️</div>
+      <h3>Courtroom view & hearing prep</h3>
+      <p>Walk into your hearing prepared. SynJuris generates your opening statement, key points, exhibit list, and full hearing prep guide — organized the way a judge expects to hear it.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>Case dynamics engine</h3>
+      <p>A live score of your case across three dimensions: evidence strength, procedural health, and adversarial pressure. Deterministic, auditable, and updated every time you add evidence.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🗓</div>
+      <h3>Timeline builder</h3>
+      <p>Build a chronological timeline of your case. Flag high-importance events. See the story of your case the way a judge will — in order, with context, and without gaps.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">💬</div>
+      <h3>Communication log</h3>
+      <p>Log every call, text, email, and in-person interaction with the other party. Channel, direction, date, and content — all recorded and automatically scanned for violation patterns.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">💰</div>
+      <h3>Child support calculator</h3>
+      <p>Estimate support using your state's actual formula and statute. Shows the math step by step, factors that could change the outcome, and how to request a modification.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🗺</div>
+      <h3>Legal roadmap</h3>
+      <p>A step-by-step guide to your specific case type — what to file, when to file it, what comes next. Built around your jurisdiction and where you are in the process.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🔒</div>
+      <h3>Encrypted backup & audit trail</h3>
+      <p>Every AI interaction is logged with a tamper-evident hash. Export an encrypted backup of your entire case at any time. Your data is verifiable and yours.</p>
+    </div>
+
   </div>
 </section>
 
@@ -4529,6 +4587,32 @@ textarea{resize:vertical;min-height:72px}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{display:inline-block;animation:spin .9s linear infinite}
+@media(max-width:768px){
+  #app{grid-template-columns:1fr;grid-template-rows:50px 1fr}
+  #sidebar{position:fixed;left:0;top:50px;bottom:0;width:260px;z-index:150;transform:translateX(-100%);transition:transform .25s ease}
+  #sidebar.open{transform:translateX(0)}
+  #sb-overlay{display:none;position:fixed;inset:0;top:50px;background:rgba(0,0,0,.5);z-index:149}
+  #sb-overlay.open{display:block}
+  #mob-menu{display:flex!important}
+  #cv-head{padding:12px 14px 0}
+  #cv-head h2{font-size:18px}
+  #tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  #tabs::-webkit-scrollbar{display:none}
+  .tab{font-size:12px;padding:8px 10px;white-space:nowrap}
+  #tc{padding:14px}
+  .grid2,.grid3,.grid4,.two-col,.three-col{grid-template-columns:1fr!important}
+  .ev{flex-direction:column;gap:6px}
+  .ev-acts{flex-wrap:wrap}
+  .dl-item{flex-wrap:wrap;gap:6px}
+  .dl-date{min-width:unset}
+  .fin-item{flex-wrap:wrap}
+  .fin-amt{min-width:unset}
+  .msg{max-width:95%}
+  #modal{width:100%;max-width:100vw;margin:0;border-radius:var(--rl) var(--rl) 0 0;position:fixed;bottom:0;left:0;right:0;max-height:92vh}
+  #mo{align-items:flex-end;padding-top:0}
+  .stat-n{font-size:26px}
+  .topbar-tag{display:none}
+}
 @media print{
   #sidebar,#topbar,.btn,.xbtn,.btn-p,.btn-s,.btn-r,#tabs,#chat-ir,.sugg-row,.filter-row,.dt-grid,#new-btn,.ev-acts,.dl-acts,.fin-item button,.mo-x{display:none!important}
   #app{display:block!important}
@@ -4551,6 +4635,7 @@ textarea{resize:vertical;min-height:72px}
 <div id="app">
 
 <div id="topbar">
+  <button id="mob-menu" onclick="toggleSidebar()" style="display:none;background:none;border:none;color:var(--ink);cursor:pointer;padding:4px 8px;font-size:20px;line-height:1;margin-right:8px" aria-label="Menu">☰</button>
   <h1>SYN<em>JURIS</em></h1>
   <span class="topbar-tag">AI-ASSISTED &nbsp;&middot;&nbsp; YOUR DATA STAYS YOURS</span>
   <div class="sp"></div>
@@ -4559,6 +4644,7 @@ textarea{resize:vertical;min-height:72px}
     style="margin-left:10px;font-size:10px;color:var(--ink3);border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;white-space:nowrap"></span>
   <a href="/logout" style="margin-left:10px;font-size:11px;color:var(--ink3);text-decoration:none;border:1px solid var(--border);border-radius:4px;padding:4px 10px;white-space:nowrap" title="Sign out">Sign out</a>
 </div>
+<div id="sb-overlay" onclick="toggleSidebar()"></div>
 
 <div id="sidebar">
   <div id="sb-head"><p>My Cases</p><button id="new-btn" onclick="openNewCase()">+ New Case</button></div>
@@ -4843,6 +4929,7 @@ async function loadCases(){
 }
 
 async function loadCase(id){
+  closeSidebarOnCase();
   const data = await api('/api/cases/'+id);
   CC = data.case; CC._p=data.parties; CC._ev=data.evidence;
   CC._docs=data.documents; CC._tl=data.timeline;
@@ -6066,6 +6153,18 @@ async function api(url,body){
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     return r.json();
   }catch(e){console.error('API error',url,e);return {error:e.message||'Network error'};}
+}
+function toggleSidebar(){
+  const sb=document.getElementById('sidebar');
+  const ov=document.getElementById('sb-overlay');
+  sb.classList.toggle('open');
+  ov.classList.toggle('open');
+}
+function closeSidebarOnCase(){
+  if(window.innerWidth<=768){
+    document.getElementById('sidebar').classList.remove('open');
+    document.getElementById('sb-overlay').classList.remove('open');
+  }
 }
 function val(id){return(document.getElementById(id)?.value||'').trim();}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
