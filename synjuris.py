@@ -1523,6 +1523,10 @@ LANDING_HTML = """<!DOCTYPE html>
   .cta-bottom p{font-size:15px;color:var(--ink2);margin-bottom:32px}
   .cta-bottom a{display:inline-block;background:var(--gold);color:var(--bg);border-radius:8px;padding:15px 36px;font-size:16px;font-weight:700;text-decoration:none;transition:background .2s}
   .cta-bottom a:hover{background:var(--gold2)}
+  .support-bar{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:28px 24px;text-align:center}
+  .support-bar p{max-width:620px;margin:0 auto;font-size:13px;color:var(--ink3);line-height:1.7}
+  .support-bar a{color:var(--gold);text-decoration:none}
+  .support-bar a:hover{text-decoration:underline}
   footer{border-top:1px solid var(--border);padding:24px 40px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
   footer p{font-size:12px;color:var(--ink3)}
   footer a{color:var(--ink3);text-decoration:none;font-size:12px}
@@ -1682,8 +1686,8 @@ LANDING_HTML = """<!DOCTYPE html>
         <div class="pc-label">Cloud</div>
         <div class="pc-price">9<span>/mo</span></div>
         <div class="pc-desc">Everything included. AI ready. Works on any device. Less than one hour with an attorney.</div>
-        <a href="/login" class="btn-primary">Start free trial →</a>
-        <div class="pc-note">14-day free trial. Cancel anytime.</div>
+        <a href="/login" class="btn-primary">Get started →</a>
+        <div class="pc-note">Cancel anytime.</div>
       </div>
     </div>
   </div>
@@ -1704,6 +1708,10 @@ LANDING_HTML = """<!DOCTYPE html>
   <h2>Ready to start?</h2>
   <p>Free to create an account. No credit card. No catch.<br>A tool built by someone who needed it — for everyone who needs it now.</p>
   <a href="/login">Create your free account →</a>
+</div>
+
+<div class="support-bar">
+  <p>SynJuris is actively developed and improving. If anything doesn't work the way you expect, please email <a href="mailto:support@synjuris.com">support@synjuris.com</a> — we read every message and take every report seriously. You're not just a user, you're helping build something that matters.</p>
 </div>
 
 <footer>
