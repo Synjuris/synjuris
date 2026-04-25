@@ -5975,6 +5975,7 @@ async function createCase(){
   _nd.filing_deadline=val('nc-fdl'); _nd.hearing_date=val('nc-hd');
   _nd.goals=val('nc-goals'); _nd.notes=val('nc-notes');
   const d=await api('/api/cases',_nd);
+  if(!d||d.error||!d.id){alert('Could not create case: '+(d&&d.error?d.error:'Unknown error. Please try again.'));return;}
   closeMo(); await loadCases(); await loadCase(d.id);
 }
 
@@ -6055,8 +6056,11 @@ async function api(url,body){
   return fetch(url,{method:isGet?'GET':'POST',headers:{'Content-Type':'application/json'},body:isGet?undefined:JSON.stringify(body)}).then(r=>r.json());
 }
 async function api(url,body){
-  if(body===undefined) return fetch(url).then(r=>r.json());
-  return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+  try{
+    if(body===undefined) return fetch(url).then(r=>r.json());
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    return r.json();
+  }catch(e){console.error('API error',url,e);return {error:e.message||'Network error'};}
 }
 function val(id){return(document.getElementById(id)?.value||'').trim();}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
