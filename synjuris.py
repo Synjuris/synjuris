@@ -1973,6 +1973,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_html(LANDING_HTML); return
             self.send_html(UI); return
 
+        if path == "/api/status":
+            self.send_json({"ai": bool(API_KEY), "version": VERSION}); return
+
         if path == "/api/cases":
             uid = require_auth(self)
             if not uid: return
@@ -4807,9 +4810,9 @@ function renderCitationWarnings(citations){
 async function init(){
   await Promise.all([loadCases(), loadUserTier()]);
   try{
-    const r = await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({case_id:0,message:'ping'})});
+    const r = await fetch('/api/status');
     const d = await r.json();
-    const on = d.reply && !d.reply.includes('No API key') && !d.reply.includes('AI features require');
+    const on = d.ai === true;
     document.getElementById('apill').classList.toggle('on',on);
     document.getElementById('apill-t').textContent = on ? 'AI ready' : 'AI offline — no key set';
   }catch(e){ document.getElementById('apill-t').textContent = 'AI offline'; }
