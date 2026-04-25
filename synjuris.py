@@ -1490,6 +1490,34 @@ LANDING_HTML = """<!DOCTYPE html>
   .trust-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px}
   .trust-card h3{font-size:14px;font-weight:600;color:var(--gold);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px}
   .trust-card p{font-size:14px;color:var(--ink2);line-height:1.65}
+  .pricing{max-width:960px;margin:0 auto;padding:80px 24px}
+  .pricing h2{font-size:26px;font-weight:700;text-align:center;margin-bottom:10px}
+  .pricing-sub{text-align:center;color:var(--ink3);font-size:15px;margin-bottom:48px}
+  .pricing-table-wrap{overflow-x:auto;margin-bottom:52px}
+  .pricing-table{width:100%;border-collapse:collapse;font-size:14px}
+  .pricing-table th{padding:12px 16px;text-align:center;font-size:13px;font-weight:600;color:var(--ink2);border-bottom:2px solid var(--border)}
+  .pricing-table th:first-child{text-align:left}
+  .pricing-table td{padding:11px 16px;border-bottom:1px solid var(--border2);color:var(--ink2)}
+  .pricing-table td:first-child{color:var(--ink);font-size:13px}
+  .pricing-table td:not(:first-child){text-align:center;color:var(--green);font-weight:500}
+  .pricing-table td.caveat{color:var(--ink3);font-size:12px;font-style:italic}
+  .pricing-table td.no{color:var(--ink3)}
+  .pricing-table tr:hover td{background:rgba(201,168,76,.03)}
+  .pricing-table .divider-row td{padding:4px;border-bottom:1px solid var(--border)}
+  .highlight-col{background:rgba(201,168,76,.06);border-left:1px solid var(--gold-bd);border-right:1px solid var(--gold-bd)}
+  .price-tag{font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:2px 7px;margin-left:6px;font-weight:500;color:var(--ink3)}
+  .price-tag.gold{background:var(--gold-bg);border-color:var(--gold-bd);color:var(--gold)}
+  .pricing-cards{display:grid;grid-template-columns:1fr 1fr;gap:24px;max-width:680px;margin:0 auto}
+  @media(max-width:600px){.pricing-cards{grid-template-columns:1fr}}
+  .pricing-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px 24px;text-align:center}
+  .pricing-card.featured{border-color:var(--gold);background:var(--gold-bg)}
+  .pc-label{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);margin-bottom:10px}
+  .pc-price{font-size:48px;font-weight:700;color:var(--ink);line-height:1;margin-bottom:12px}
+  .pc-price span{font-size:18px;color:var(--ink3);font-weight:400}
+  .pc-desc{font-size:13px;color:var(--ink2);line-height:1.65;margin-bottom:20px}
+  .pc-note{font-size:11px;color:var(--ink3);margin-top:10px}
+  .btn-outline{display:inline-block;border:1px solid var(--border);color:var(--ink2);border-radius:6px;padding:10px 20px;font-size:14px;text-decoration:none;transition:all .2s}
+  .btn-outline:hover{border-color:var(--gold);color:var(--gold)}
   .cta-bottom{text-align:center;padding:80px 24px 100px;background:var(--bg)}
   .cta-bottom h2{font-size:28px;font-weight:700;margin-bottom:14px}
   .cta-bottom p{font-size:15px;color:var(--ink2);margin-bottom:32px}
@@ -1607,6 +1635,59 @@ LANDING_HTML = """<!DOCTYPE html>
   <h2>Who this is for</h2>
   <p>SynJuris is for anyone navigating family court without an attorney — custody disputes, visitation enforcement, support modifications, protective orders. If you're representing yourself and feeling overwhelmed, this was built for you.</p>
 </div>
+
+<section class="pricing">
+  <h2>One price. Everything included.</h2>
+  <p class="pricing-sub">No tiers. No feature locks. No surprises.</p>
+
+  <div class="pricing-table-wrap">
+    <table class="pricing-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Local <span class="price-tag">Free</span></th>
+          <th class="highlight-col">Cloud <span class="price-tag gold">9/mo</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Evidence organizer &amp; legal weight scoring</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Deadline tracking &amp; overdue alerts</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Communication log &amp; violation detection</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Timeline builder</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Case dynamics engine</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Child support calculator</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Legal roadmap</td><td>✓</td><td>✓</td></tr>
+        <tr><td>Encrypted backup &amp; audit trail</td><td>✓</td><td>✓</td></tr>
+        <tr class="divider-row"><td colspan="3"></td></tr>
+        <tr><td>AI legal assistant</td><td class="caveat">Requires your own API key</td><td>✓ Included</td></tr>
+        <tr><td>Document generator</td><td class="caveat">Requires your own API key</td><td>✓ Included</td></tr>
+        <tr><td>Courtroom view &amp; hearing prep</td><td class="caveat">Requires your own API key</td><td>✓ Included</td></tr>
+        <tr class="divider-row"><td colspan="3"></td></tr>
+        <tr><td>Access from any device</td><td class="no">—</td><td>✓</td></tr>
+        <tr><td>Automatic cloud backups</td><td class="no">—</td><td>✓</td></tr>
+        <tr><td>No setup required</td><td class="no">—</td><td>✓</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pricing-cta">
+    <div class="pricing-cards">
+      <div class="pricing-card">
+        <div class="pc-label">Local — Free</div>
+        <div class="pc-price">/bin/sh</div>
+        <div class="pc-desc">Download and run on your own computer. Full feature set. AI requires your own Anthropic API key.</div>
+        <a href="https://github.com/Synjuris/synjuris" target="_blank" class="btn-outline">Download from GitHub →</a>
+      </div>
+      <div class="pricing-card featured">
+        <div class="pc-label">Cloud</div>
+        <div class="pc-price">9<span>/mo</span></div>
+        <div class="pc-desc">Everything included. AI ready. Works on any device. Less than one hour with an attorney.</div>
+        <a href="/login" class="btn-primary">Start free trial →</a>
+        <div class="pc-note">14-day free trial. Cancel anytime.</div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <div class="trust">
   <div class="trust-card">
