@@ -5,12 +5,21 @@ Open: http://localhost:5000
 Your data never leaves this computer.
 """
 
-import sqlite3, json, os, re, xml.etree.ElementTree as ET
+import json, os, re, xml.etree.ElementTree as ET
 import webbrowser, threading, urllib.request, urllib.parse
 import hashlib, hmac, time
 from datetime import datetime, date
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+USE_POSTGRES  = bool(DATABASE_URL)
+
+if USE_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
+else:
+    import sqlite3
 
 _BASE        = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
 DB_PATH      = os.path.join(_BASE, "synjuris.db")
@@ -108,17 +117,293 @@ def verify_audit_entry(audit_id):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DATABASE
+# DATABASE — dual mode: PostgreSQL (cloud) or SQLite (local)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DATABASE — dual mode: PostgreSQL (cloud) or SQLite (local)
+# Transparent wrapper — all existing conn.execute() calls work unchanged.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class _HybridRow(dict):
+    """Row that supports both dict-style row["col"] and index-style row[0]."""
+    def __init__(self, d):
+        super().__init__(d)
+        self._vals = list(d.values())
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._vals[key]
+        return super().__getitem__(key)
+
+class _PGCursor:
+    """Wraps psycopg2 cursor to behave like sqlite3 cursor."""
+    def __init__(self, cur):
+        self._cur = cur
+        self.lastrowid = None
+
+    def execute(self, sql, params=()):
+        # Convert ? to %s
+        sql = sql.replace("?", "%s")
+        # For INSERT statements, add RETURNING id to get lastrowid
+        if sql.strip().upper().startswith("INSERT") and "RETURNING" not in sql.upper():
+            sql = sql.rstrip("; \n") + " RETURNING id"
+        self._cur.execute(sql, params or ())
+        if sql.strip().upper().startswith("INSERT"):
+            try:
+                row = self._cur.fetchone()
+                self.lastrowid = row["id"] if row else None
+            except Exception:
+                self.lastrowid = None
+        return self
+
+    def executemany(self, sql, data):
+        sql = sql.replace("?", "%s")
+        psycopg2.extras.execute_batch(self._cur, sql, data)
+        return self
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        return _HybridRow(row) if row else None
+
+    def fetchall(self):
+        return [_HybridRow(r) for r in self._cur.fetchall()]
+
+    def __iter__(self):
+        for row in self._cur:
+            yield _HybridRow(row)
+
+    def __getitem__(self, key):
+        return self._cur[key]
+
+
+class _PGConn:
+    """Wraps psycopg2 connection to behave like sqlite3 connection."""
+    def __init__(self, dsn):
+        self._conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+        self._conn.autocommit = False
+
+    def execute(self, sql, params=()):
+        cur = _PGCursor(self._conn.cursor())
+        cur.execute(sql, params)
+        return cur
+
+    def executemany(self, sql, data):
+        cur = _PGCursor(self._conn.cursor())
+        cur.executemany(sql, data)
+        return cur
+
+    def executescript(self, sql):
+        # Split on semicolons and run each statement
+        self._conn.autocommit = True
+        cur = self._conn.cursor()
+        for stmt in sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                # Convert SQLite-isms for PostgreSQL
+                stmt = stmt.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+                stmt = stmt.replace("DATETIME DEFAULT CURRENT_TIMESTAMP", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                stmt = stmt.replace("DATETIME NOT NULL", "TIMESTAMP NOT NULL")
+                stmt = stmt.replace("DATETIME", "TIMESTAMP")
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    pass  # IF NOT EXISTS handles most conflicts
+        self._conn.autocommit = False
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    if USE_POSTGRES:
+        return _PGConn(DATABASE_URL)
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+def _q(sql):
+    """Convert SQLite-style ? placeholders to PostgreSQL %s."""
+    if USE_POSTGRES:
+        return sql.replace("?", "%s")
+    return sql
+
+def _now():
+    """Current timestamp string, compatible with both DBs."""
+    return datetime.now().isoformat(sep=" ", timespec="seconds")
 
 def init_db():
     conn = get_db()
+
+    if USE_POSTGRES:
+        cur = conn.cursor()
+        # PostgreSQL schema — all tables in one shot
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            tier TEXT DEFAULT 'pro_se',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS auth_attempts (
+            id SERIAL PRIMARY KEY,
+            email TEXT NOT NULL,
+            attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            success INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS cases (
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            case_type TEXT,
+            jurisdiction TEXT,
+            court_name TEXT,
+            case_number TEXT,
+            filing_deadline TEXT,
+            hearing_date TEXT,
+            goals TEXT,
+            notes TEXT,
+            user_id INTEGER REFERENCES users(id),
+            is_deleted INTEGER DEFAULT 0,
+            deleted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS parties (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            name TEXT, role TEXT, contact TEXT, attorney TEXT, notes TEXT
+        );
+        CREATE TABLE IF NOT EXISTS evidence (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            exhibit_number TEXT,
+            content TEXT,
+            source TEXT,
+            event_date TEXT,
+            category TEXT,
+            confirmed INTEGER DEFAULT 0,
+            notes TEXT,
+            file_path TEXT,
+            file_type TEXT,
+            original_filename TEXT,
+            is_deleted INTEGER DEFAULT 0,
+            deleted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS documents (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            title TEXT, doc_type TEXT, content TEXT,
+            version INTEGER DEFAULT 1,
+            parent_id INTEGER,
+            is_deleted INTEGER DEFAULT 0,
+            deleted_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS timeline_events (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            event_date TEXT, title TEXT, description TEXT,
+            category TEXT, importance TEXT DEFAULT 'normal',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS financials (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            entry_date TEXT, description TEXT,
+            amount REAL, category TEXT, direction TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS deadlines (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            due_date TEXT, title TEXT, description TEXT,
+            completed INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS chat_history (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            role TEXT, content TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            action_type TEXT NOT NULL, ai_call_type TEXT,
+            state_x INTEGER, state_y INTEGER, state_z INTEGER,
+            trace_hash TEXT NOT NULL,
+            state_snapshot_json TEXT, prompt_inputs_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS portal_tokens (
+            id SERIAL PRIMARY KEY,
+            token TEXT NOT NULL UNIQUE,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            attorney_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            label TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS portal_evidence (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            portal_token_id INTEGER REFERENCES portal_tokens(id) ON DELETE CASCADE,
+            content TEXT, source TEXT, event_date TEXT, category TEXT,
+            attorney_note TEXT, approved INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS conflict_checks (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            case_id INTEGER REFERENCES cases(id),
+            party_names_json TEXT,
+            result TEXT,
+            checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS time_entries (
+            id SERIAL PRIMARY KEY,
+            case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            description TEXT, hours REAL DEFAULT 0.0,
+            billable INTEGER DEFAULT 1, exported INTEGER DEFAULT 0,
+            source TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS citation_cache (
+            id SERIAL PRIMARY KEY,
+            citation TEXT NOT NULL UNIQUE,
+            result_json TEXT,
+            verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        os.makedirs(UPLOADS_DIR, exist_ok=True)
+        return
+
+    # ── SQLite path (local download) ─────────────────────────────────────────
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS schema_version (
         version INTEGER PRIMARY KEY,
@@ -228,135 +513,59 @@ def init_db():
         success INTEGER DEFAULT 0
     );
     """)
-    # ── Schema-version-based migrations ──────────────────────────────────────
+    # Migrations
     current = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 0
-
     if current < 1:
-        # Migration 1: add file attachment columns to evidence
         existing = [r[1] for r in conn.execute("PRAGMA table_info(evidence)").fetchall()]
-        if "file_path" not in existing:
-            conn.execute("ALTER TABLE evidence ADD COLUMN file_path TEXT")
-        if "file_type" not in existing:
-            conn.execute("ALTER TABLE evidence ADD COLUMN file_type TEXT")
+        if "file_path" not in existing: conn.execute("ALTER TABLE evidence ADD COLUMN file_path TEXT")
+        if "file_type" not in existing: conn.execute("ALTER TABLE evidence ADD COLUMN file_type TEXT")
         conn.execute("INSERT INTO schema_version(version) VALUES(1)")
-
     if current < 2:
-        # Migration 2: create audit_log if it predates the CREATE IF NOT EXISTS above
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
         if "audit_log" not in tables:
-            conn.execute("""CREATE TABLE audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-                action_type TEXT NOT NULL, ai_call_type TEXT,
-                state_x INTEGER, state_y INTEGER, state_z INTEGER,
-                trace_hash TEXT NOT NULL, state_snapshot_json TEXT,
-                prompt_inputs_json TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+            conn.execute("""CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE, action_type TEXT NOT NULL, ai_call_type TEXT, state_x INTEGER, state_y INTEGER, state_z INTEGER, trace_hash TEXT NOT NULL, state_snapshot_json TEXT, prompt_inputs_json TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
         conn.execute("INSERT INTO schema_version(version) VALUES(2)")
-
     if current < 3:
-        # Migration 3: add user_id to cases
         existing_cases = [r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()]
-        if "user_id" not in existing_cases:
-            conn.execute("ALTER TABLE cases ADD COLUMN user_id INTEGER")
+        if "user_id" not in existing_cases: conn.execute("ALTER TABLE cases ADD COLUMN user_id INTEGER")
         conn.execute("INSERT INTO schema_version(version) VALUES(3)")
-
     if current < 4:
-        # Migration 4: soft delete + original filename columns
         ev_cols = [r[1] for r in conn.execute("PRAGMA table_info(evidence)").fetchall()]
-        if "original_filename" not in ev_cols:
-            conn.execute("ALTER TABLE evidence ADD COLUMN original_filename TEXT")
-        if "is_deleted" not in ev_cols:
-            conn.execute("ALTER TABLE evidence ADD COLUMN is_deleted INTEGER DEFAULT 0")
-        if "deleted_at" not in ev_cols:
-            conn.execute("ALTER TABLE evidence ADD COLUMN deleted_at DATETIME")
+        for col, defn in [("original_filename","TEXT"),("is_deleted","INTEGER DEFAULT 0"),("deleted_at","DATETIME")]:
+            if col not in ev_cols: conn.execute(f"ALTER TABLE evidence ADD COLUMN {col} {defn}")
         case_cols = [r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()]
-        if "is_deleted" not in case_cols:
-            conn.execute("ALTER TABLE cases ADD COLUMN is_deleted INTEGER DEFAULT 0")
-        if "deleted_at" not in case_cols:
-            conn.execute("ALTER TABLE cases ADD COLUMN deleted_at DATETIME")
+        for col, defn in [("is_deleted","INTEGER DEFAULT 0"),("deleted_at","DATETIME")]:
+            if col not in case_cols: conn.execute(f"ALTER TABLE cases ADD COLUMN {col} {defn}")
         doc_cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
-        if "is_deleted" not in doc_cols:
-            conn.execute("ALTER TABLE documents ADD COLUMN is_deleted INTEGER DEFAULT 0")
-        if "deleted_at" not in doc_cols:
-            conn.execute("ALTER TABLE documents ADD COLUMN deleted_at DATETIME")
-        if "version" not in doc_cols:
-            conn.execute("ALTER TABLE documents ADD COLUMN version INTEGER DEFAULT 1")
-        if "parent_id" not in doc_cols:
-            conn.execute("ALTER TABLE documents ADD COLUMN parent_id INTEGER")
+        for col, defn in [("is_deleted","INTEGER DEFAULT 0"),("deleted_at","DATETIME"),("version","INTEGER DEFAULT 1"),("parent_id","INTEGER")]:
+            if col not in doc_cols: conn.execute(f"ALTER TABLE documents ADD COLUMN {col} {defn}")
         conn.execute("INSERT INTO schema_version(version) VALUES(4)")
-
     if current < 5:
-        # Migration 5: session expiry and auth rate-limit table
         sess_cols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
         if "expires_at" not in sess_cols:
-            # Set existing sessions to expire 30 days from now
             conn.execute("ALTER TABLE sessions ADD COLUMN expires_at DATETIME")
-            conn.execute("UPDATE sessions SET expires_at = datetime('now', '+30 days') WHERE expires_at IS NULL")
+            conn.execute("UPDATE sessions SET expires_at = '2026-01-01 00:00:00' WHERE expires_at IS NULL")
         tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
         if "auth_attempts" not in tables:
-            conn.execute("""CREATE TABLE auth_attempts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT NOT NULL,
-                attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                success INTEGER DEFAULT 0)""")
+            conn.execute("""CREATE TABLE auth_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP, success INTEGER DEFAULT 0)""")
         conn.execute("INSERT INTO schema_version(version) VALUES(5)")
-
     if current < 6:
-        # Migration 6: attorney tier, portal tokens, conflict log, time entries
         user_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "tier" not in user_cols:
-            conn.execute("ALTER TABLE users ADD COLUMN tier TEXT DEFAULT 'pro_se'")
-        tables = [r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-        if "portal_tokens" not in tables:
-            conn.execute("""CREATE TABLE portal_tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                token TEXT NOT NULL UNIQUE,
-                case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-                attorney_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                label TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                expires_at DATETIME)""")
-        if "portal_evidence" not in tables:
-            conn.execute("""CREATE TABLE portal_evidence (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-                portal_token_id INTEGER REFERENCES portal_tokens(id) ON DELETE CASCADE,
-                content TEXT, source TEXT, event_date TEXT, category TEXT,
-                attorney_note TEXT, approved INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
-        if "conflict_checks" not in tables:
-            conn.execute("""CREATE TABLE conflict_checks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                case_id INTEGER REFERENCES cases(id),
-                party_names_json TEXT,
-                result TEXT,
-                checked_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
-        if "time_entries" not in tables:
-            conn.execute("""CREATE TABLE time_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                description TEXT, hours REAL DEFAULT 0.0,
-                billable INTEGER DEFAULT 1, exported INTEGER DEFAULT 0,
-                source TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+        if "tier" not in user_cols: conn.execute("ALTER TABLE users ADD COLUMN tier TEXT DEFAULT 'pro_se'")
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        for tbl, ddl in [
+            ("portal_tokens", "CREATE TABLE portal_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT NOT NULL UNIQUE, case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE, attorney_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, label TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, expires_at DATETIME)"),
+            ("portal_evidence", "CREATE TABLE portal_evidence (id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE, portal_token_id INTEGER REFERENCES portal_tokens(id) ON DELETE CASCADE, content TEXT, source TEXT, event_date TEXT, category TEXT, attorney_note TEXT, approved INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"),
+            ("conflict_checks", "CREATE TABLE conflict_checks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, case_id INTEGER REFERENCES cases(id), party_names_json TEXT, result TEXT, checked_at DATETIME DEFAULT CURRENT_TIMESTAMP)"),
+            ("time_entries", "CREATE TABLE time_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE, user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, description TEXT, hours REAL DEFAULT 0.0, billable INTEGER DEFAULT 1, exported INTEGER DEFAULT 0, source TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"),
+        ]:
+            if tbl not in tables: conn.execute(ddl)
         conn.execute("INSERT INTO schema_version(version) VALUES(6)")
-
     if current < 7:
-        # Migration 7: CourtListener citation cache + backup metadata
-        tables = [r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
         if "citation_cache" not in tables:
-            conn.execute("""CREATE TABLE citation_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                citation TEXT NOT NULL UNIQUE,
-                result_json TEXT,
-                verified_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+            conn.execute("CREATE TABLE citation_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, citation TEXT NOT NULL UNIQUE, result_json TEXT, verified_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
         conn.execute("INSERT INTO schema_version(version) VALUES(7)")
-
     conn.commit(); conn.close()
     os.makedirs(UPLOADS_DIR, exist_ok=True)
 
@@ -1149,16 +1358,16 @@ _MAX_AUTH_ATTEMPTS = 5   # per email per window
 _AUTH_WINDOW_SECONDS = 300  # 5 minutes
 
 def create_session(user_id):
+    import datetime as _dt
     token = secrets.token_hex(32)
-    expires = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    expires = (_dt.datetime.utcnow() + _dt.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
-    # expire_at = now + 30 days (SQLite datetime arithmetic)
     conn.execute(
-        "INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?, datetime('now', '+30 days'))",
-        (token, user_id)
+        "INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)",
+        (token, user_id, expires)
     )
     # Purge expired sessions opportunistically
-    conn.execute("DELETE FROM sessions WHERE expires_at < datetime('now')")
+    conn.execute("DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP")
     conn.commit(); conn.close()
     return token
 
@@ -1166,7 +1375,7 @@ def get_user_from_token(token):
     if not token: return None
     conn = get_db()
     row = conn.execute(
-        "SELECT user_id FROM sessions WHERE token=? AND expires_at > datetime('now')",
+        "SELECT user_id FROM sessions WHERE token=? AND expires_at > CURRENT_TIMESTAMP",
         (token,)
     ).fetchone()
     conn.close()
@@ -1174,11 +1383,12 @@ def get_user_from_token(token):
 
 def _check_rate_limit(email: str) -> bool:
     """Return True if login is allowed, False if rate-limited."""
+    import datetime as _dt
     conn = get_db()
-    window_start = f"datetime('now', '-{_AUTH_WINDOW_SECONDS} seconds')"
+    window_start = (_dt.datetime.utcnow() - _dt.timedelta(seconds=_AUTH_WINDOW_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
     count = conn.execute(
-        f"SELECT COUNT(*) FROM auth_attempts WHERE email=? AND success=0 AND attempted_at > {window_start}",
-        (email.lower(),)
+        "SELECT COUNT(*) FROM auth_attempts WHERE email=? AND success=0 AND attempted_at > ?",
+        (email.lower(), window_start)
     ).fetchone()[0]
     conn.close()
     return count < _MAX_AUTH_ATTEMPTS
@@ -1191,9 +1401,9 @@ def _record_auth_attempt(email: str, success: bool):
     )
     # Trim old records (keep last 1000 per email to avoid unbounded growth)
     conn.execute(
-        "DELETE FROM auth_attempts WHERE id IN ("
-        "  SELECT id FROM auth_attempts WHERE email=? ORDER BY id DESC LIMIT -1 OFFSET 1000"
-        ")", (email.lower(),)
+        "DELETE FROM auth_attempts WHERE email=? AND id NOT IN ("
+        "  SELECT id FROM auth_attempts WHERE email=? ORDER BY id DESC LIMIT 1000"
+        ")", (email.lower(), email.lower())
     )
     conn.commit(); conn.close()
 
@@ -1228,6 +1438,140 @@ def require_attorney(handler):
         handler.send_json({"error": "Attorney tier required"}, 403)
         return None
     return uid
+
+LANDING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SynJuris — You shouldn't have to fight this alone</title>
+<meta name="description" content="SynJuris helps pro se litigants organize evidence, track deadlines, and prepare for family court — built by a father who lived it.">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0d1b2a;--surface:#111f30;--border:#1e3248;--border-light:#243850;
+    --ink:#e8dfc8;--ink2:#a89e8a;--ink3:#6b7a8d;
+    --gold:#c9a84c;--gold2:#e0bb62;--red:#e05555;--green:#4caf7d;
+  }
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6}
+  nav{display:flex;align-items:center;justify-content:space-between;padding:18px 40px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(13,27,42,0.95);backdrop-filter:blur(8px);z-index:100}
+  .nav-logo{font-size:20px;font-weight:700;color:var(--gold);letter-spacing:.04em}
+  .nav-links{display:flex;gap:12px;align-items:center}
+  .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--ink2);border-radius:6px;padding:8px 18px;font-size:14px;cursor:pointer;text-decoration:none;transition:all .2s}
+  .btn-ghost:hover{border-color:var(--gold);color:var(--gold)}
+  .btn-primary{background:var(--gold);color:var(--bg);border:none;border-radius:6px;padding:9px 22px;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;transition:background .2s}
+  .btn-primary:hover{background:var(--gold2)}
+  .hero{max-width:760px;margin:0 auto;padding:90px 24px 80px;text-align:center}
+  .hero-eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--gold);margin-bottom:20px}
+  .hero h1{font-size:clamp(32px,5vw,52px);font-weight:700;line-height:1.15;color:var(--ink);margin-bottom:24px}
+  .hero p{font-size:18px;color:var(--ink2);max-width:600px;margin:0 auto 36px;line-height:1.7}
+  .hero-cta{display:inline-block;background:var(--gold);color:var(--bg);border:none;border-radius:8px;padding:15px 36px;font-size:16px;font-weight:700;cursor:pointer;text-decoration:none;transition:background .2s}
+  .hero-cta:hover{background:var(--gold2)}
+  .hero-note{font-size:13px;color:var(--ink3);margin-top:14px}
+  .origin{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:36px 24px;text-align:center}
+  .origin p{max-width:620px;margin:0 auto;font-size:15px;color:var(--ink2);font-style:italic;line-height:1.75}
+  .origin strong{color:var(--ink);font-style:normal}
+  .features{max-width:900px;margin:0 auto;padding:80px 24px}
+  .features h2{font-size:26px;font-weight:700;text-align:center;margin-bottom:10px}
+  .features .sub{text-align:center;color:var(--ink3);font-size:15px;margin-bottom:52px}
+  .feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:24px}
+  .feature-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px 24px}
+  .feature-icon{font-size:28px;margin-bottom:14px}
+  .feature-card h3{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:10px}
+  .feature-card p{font-size:14px;color:var(--ink2);line-height:1.65}
+  .for-section{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:70px 24px;text-align:center}
+  .for-section h2{font-size:24px;font-weight:700;margin-bottom:16px}
+  .for-section p{max-width:580px;margin:0 auto;font-size:15px;color:var(--ink2);line-height:1.75}
+  .trust{max-width:760px;margin:0 auto;padding:70px 24px;display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  @media(max-width:560px){.trust{grid-template-columns:1fr}}
+  .trust-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px}
+  .trust-card h3{font-size:14px;font-weight:600;color:var(--gold);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px}
+  .trust-card p{font-size:14px;color:var(--ink2);line-height:1.65}
+  .cta-bottom{text-align:center;padding:80px 24px 100px;background:var(--bg)}
+  .cta-bottom h2{font-size:28px;font-weight:700;margin-bottom:14px}
+  .cta-bottom p{font-size:15px;color:var(--ink2);margin-bottom:32px}
+  .cta-bottom a{display:inline-block;background:var(--gold);color:var(--bg);border-radius:8px;padding:15px 36px;font-size:16px;font-weight:700;text-decoration:none;transition:background .2s}
+  .cta-bottom a:hover{background:var(--gold2)}
+  footer{border-top:1px solid var(--border);padding:24px 40px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+  footer p{font-size:12px;color:var(--ink3)}
+  footer a{color:var(--ink3);text-decoration:none;font-size:12px}
+  footer a:hover{color:var(--gold)}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-logo">SynJuris</div>
+  <div class="nav-links">
+    <a href="/login" class="btn-ghost">Sign In</a>
+    <a href="/login" class="btn-primary">Get Started Free</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-eyebrow">For pro se litigants</div>
+  <h1>You shouldn't have to fight this alone.<br>Now you don't.</h1>
+  <p>SynJuris organizes your evidence, tracks your deadlines, and helps you show up to court prepared — even if this is your first time.</p>
+  <a href="/login" class="hero-cta">Start your case free →</a>
+  <div class="hero-note">No credit card. No lawyer required.</div>
+</section>
+
+<div class="origin">
+  <p><strong>SynJuris was built by a father</strong> who was being kept from his son and couldn't afford an attorney. He built the tool he needed — and made it available to everyone who needs it now.</p>
+</div>
+
+<section class="features">
+  <h2>What SynJuris does for you</h2>
+  <p class="sub">Built for the reality of representing yourself in family court.</p>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="feature-icon">📁</div>
+      <h3>Every incident — logged, categorized, and ready to show a judge</h3>
+      <p>No more scattered screenshots. Your evidence is organized by legal weight, automatically categorized, and ready to present. Texts, emails, missed visitations — all in one place.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">⏱</div>
+      <h3>Never miss a deadline because life got in the way</h3>
+      <p>SynJuris tracks every filing date, hearing, and court deadline — and warns you before something slips. Missing a deadline can cost you the case. This prevents that.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🚩</div>
+      <h3>When they violate the order — it's documented instantly</h3>
+      <p>Log communications in real time. SynJuris automatically detects and flags harassment, gatekeeping, threats, and order violations as they happen — before you forget the details.</p>
+    </div>
+  </div>
+</section>
+
+<div class="for-section">
+  <h2>Who this is for</h2>
+  <p>SynJuris is for anyone navigating family court without an attorney — custody disputes, visitation enforcement, support modifications, protective orders. If you're representing yourself and feeling overwhelmed, this was built for you.</p>
+</div>
+
+<div class="trust">
+  <div class="trust-card">
+    <h3>Your data is yours. Full stop.</h3>
+    <p>Everything you enter stays on your account and is never shared, sold, or used against you. Your case is private. Your story is safe here.</p>
+  </div>
+  <div class="trust-card">
+    <h3>This is not legal advice.</h3>
+    <p>SynJuris helps you organize, document, and prepare. It does not replace an attorney. What it does is make sure that if you walk into that courtroom alone, you walk in prepared.</p>
+  </div>
+</div>
+
+<div class="cta-bottom">
+  <h2>Ready to start?</h2>
+  <p>Free to create an account. No credit card. No catch.<br>A tool built by someone who needed it — for everyone who needs it now.</p>
+  <a href="/login">Create your free account →</a>
+</div>
+
+<footer>
+  <p>© 2025 SynJuris. Built for pro se litigants.</p>
+  <a href="/login">Sign in</a>
+</footer>
+
+</body>
+</html>"""
 
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -1620,13 +1964,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", "sj_token=; Path=/; HttpOnly; Max-Age=0")
             self.end_headers(); return
 
-        # Main app — require auth
+        # Root — landing page for visitors, app for logged-in users
         if path in ("/", "/index.html"):
             uid = get_user_from_token(get_token_from_request(self))
             if not uid:
-                self.send_response(302)
-                self.send_header("Location", "/login")
-                self.end_headers(); return
+                self.send_html(LANDING_HTML); return
             self.send_html(UI); return
 
         if path == "/api/cases":
@@ -1796,7 +2138,7 @@ class Handler(BaseHTTPRequestHandler):
             pt = conn.execute(
                 "SELECT pt.*, c.title as case_title FROM portal_tokens pt "
                 "JOIN cases c ON c.id=pt.case_id "
-                "WHERE pt.token=? AND (pt.expires_at IS NULL OR pt.expires_at > datetime('now'))",
+                "WHERE pt.token=? AND (pt.expires_at IS NULL OR pt.expires_at > CURRENT_TIMESTAMP)",
                 (token,)
             ).fetchone()
             conn.close()
@@ -1813,7 +2155,7 @@ class Handler(BaseHTTPRequestHandler):
             token = b2.get("token","")
             conn = get_db()
             pt = conn.execute(
-                "SELECT * FROM portal_tokens WHERE token=? AND (expires_at IS NULL OR expires_at > datetime('now'))",
+                "SELECT * FROM portal_tokens WHERE token=? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)",
                 (token,)
             ).fetchone()
             if not pt:
@@ -1993,9 +2335,9 @@ class Handler(BaseHTTPRequestHandler):
             if not case:
                 conn.close(); self.send_json({"error":"not found"},404); return
             # Soft delete: mark case and all its evidence/documents as deleted
-            conn.execute("UPDATE cases SET is_deleted=1, deleted_at=datetime('now') WHERE id=?", (cid,))
-            conn.execute("UPDATE evidence SET is_deleted=1, deleted_at=datetime('now') WHERE case_id=?", (cid,))
-            conn.execute("UPDATE documents SET is_deleted=1, deleted_at=datetime('now') WHERE case_id=?", (cid,))
+            conn.execute("UPDATE cases SET is_deleted=1, deleted_at=CURRENT_TIMESTAMP WHERE id=?", (cid,))
+            conn.execute("UPDATE evidence SET is_deleted=1, deleted_at=CURRENT_TIMESTAMP WHERE case_id=?", (cid,))
+            conn.execute("UPDATE documents SET is_deleted=1, deleted_at=CURRENT_TIMESTAMP WHERE case_id=?", (cid,))
             conn.commit(); conn.close()
             self.send_json({"ok": True, "note": "Case moved to trash. Physical files preserved on disk."}); return
         self.send_json({"error":"not found"}, 404)
@@ -2137,7 +2479,7 @@ class Handler(BaseHTTPRequestHandler):
             if not ev:
                 conn.close(); self.send_json({"error":"not found"}, 404); return
             conn.execute(
-                "UPDATE evidence SET is_deleted=1, deleted_at=datetime('now') WHERE id=?", (eid,)
+                "UPDATE evidence SET is_deleted=1, deleted_at=CURRENT_TIMESTAMP WHERE id=?", (eid,)
             )
             conn.commit(); conn.close(); self.send_json({"ok":True}); return
 
@@ -2883,12 +3225,13 @@ Respond ONLY in this exact JSON format (no markdown):
             case = conn.execute("SELECT id FROM cases WHERE id=? AND user_id=?", (cid,uid)).fetchone()
             if not case:
                 conn.close(); self.send_json({"error":"not found"},404); return
-            import secrets as _sec
+            import secrets as _sec, datetime as _dt
             token = _sec.token_urlsafe(32)
+            expires_90 = (_dt.datetime.utcnow() + _dt.timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
                 "INSERT INTO portal_tokens (token,case_id,attorney_user_id,label,expires_at) "
-                "VALUES (?,?,?,?,datetime('now','+90 days'))",
-                (token, cid, uid, label)
+                "VALUES (?,?,?,?,?)",
+                (token, cid, uid, label, expires_90)
             )
             conn.commit(); conn.close()
             portal_url = f"http://localhost:{PORT}/portal/{token}"
