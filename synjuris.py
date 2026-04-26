@@ -1446,603 +1446,194 @@ LANDING_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SynJuris — Fight Back.</title>
-<meta name="description" content="SynJuris is the legal case tool built for people representing themselves in court. Organize evidence, track deadlines, prep for hearings.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<title>SynJuris — You shouldn't have to fight this alone</title>
+<meta name="description" content="SynJuris helps pro se litigants organize evidence, track deadlines, and prepare for family court — built by a father who lived it.">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --bg: #0a0f14;
-    --bg2: #0e1620;
-    --surface: #111e2d;
-    --border: #1a2d42;
-    --ink: #ddd8cc;
-    --ink2: #8fa3b8;
-    --ink3: #4a5f72;
-    --gold: #c9a84c;
-    --gold2: #e0bb62;
-    --red: #d94f4f;
-    --green: #3d9e72;
-    --accent: #2a6cf6;
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0d1b2a;--surface:#111f30;--border:#1e3248;--border-light:#243850;
+    --ink:#e8dfc8;--ink2:#a89e8a;--ink3:#6b7a8d;
+    --gold:#c9a84c;--gold2:#e0bb62;--red:#e05555;--green:#4caf7d;
   }
-
-  html { scroll-behavior: smooth; }
-
-  body {
-    background: var(--bg);
-    color: var(--ink);
-    font-family: 'DM Sans', sans-serif;
-    font-size: 16px;
-    line-height: 1.6;
-    overflow-x: hidden;
-  }
-
-  nav {
-    position: sticky; top: 0; z-index: 100;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 40px;
-    background: rgba(10,15,20,0.92);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid rgba(201,168,76,0.15);
-  }
-  .nav-logo {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 26px; letter-spacing: .12em; color: var(--gold);
-  }
-  .nav-logo span {
-    color: var(--ink2); font-size: 11px; font-family: 'DM Sans', sans-serif;
-    font-weight: 400; letter-spacing: .1em; text-transform: uppercase;
-    margin-left: 10px; vertical-align: middle;
-  }
-  .nav-links { display: flex; gap: 10px; align-items: center; }
-  .btn-ghost {
-    padding: 8px 18px; border: 1px solid var(--border); border-radius: 4px;
-    font-size: 13px; color: var(--ink2); background: transparent; text-decoration: none;
-    transition: all .2s;
-  }
-  .btn-ghost:hover { border-color: var(--gold); color: var(--gold); }
-  .btn-cta {
-    padding: 9px 22px; border-radius: 4px; background: var(--gold);
-    color: #0a0f14; font-size: 13px; font-weight: 600; text-decoration: none;
-    transition: background .2s;
-  }
-  .btn-cta:hover { background: var(--gold2); }
-
-  .hero {
-    min-height: 92vh;
-    display: grid; grid-template-columns: 1fr 480px; align-items: center;
-    gap: 60px; padding: 80px 40px;
-    max-width: 1140px; margin: 0 auto;
-  }
-  .hero-eyebrow {
-    font-family: 'DM Mono', monospace;
-    font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
-    color: var(--gold); margin-bottom: 20px;
-  }
-  .hero h1 {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: clamp(60px, 8vw, 100px);
-    line-height: .95; letter-spacing: .03em;
-    color: var(--ink); margin-bottom: 30px;
-  }
-  .hero h1 em { color: var(--gold); font-style: normal; display: block; }
-  .hero-sub {
-    font-size: 17px; color: var(--ink2); line-height: 1.75;
-    max-width: 520px; margin-bottom: 36px;
-  }
-  .hero-sub strong { color: var(--ink); }
-  .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; }
-  .btn-hero {
-    padding: 14px 32px; border-radius: 4px; font-size: 15px; font-weight: 600;
-    text-decoration: none; transition: all .2s;
-  }
-  .btn-hero.primary { background: var(--gold); color: #0a0f14; }
-  .btn-hero.primary:hover { background: var(--gold2); }
-  .btn-hero.secondary { border: 1px solid var(--border); color: var(--ink2); background: transparent; }
-  .btn-hero.secondary:hover { border-color: var(--ink2); color: var(--ink); }
-  .hero-note { font-size: 12px; color: var(--ink3); margin-top: 14px; letter-spacing: .04em; }
-
-  .hero-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 32px;
-    position: relative;
-  }
-  .hero-card::before {
-    content: '';
-    position: absolute; top: -1px; left: 24px; right: 24px; height: 2px;
-    background: linear-gradient(90deg, transparent, var(--gold), transparent);
-  }
-  .hc-label {
-    font-size: 10px; font-family: 'DM Mono', monospace; letter-spacing: .14em;
-    text-transform: uppercase; color: var(--gold); margin-bottom: 16px;
-  }
-  .hc-stat { margin-bottom: 18px; }
-  .hc-bar-wrap { height: 6px; background: var(--border); border-radius: 3px; margin-top: 7px; }
-  .hc-bar { height: 100%; border-radius: 3px; }
-  .hc-row {
-    display: flex; justify-content: space-between; align-items: baseline;
-    font-size: 13px;
-  }
-  .hc-row span:first-child { color: var(--ink2); }
-  .hc-row span:last-child { font-family: 'DM Mono', monospace; font-size: 12px; }
-  .hc-flags { margin-top: 20px; }
-  .hc-flag {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 10px; border-radius: 5px; margin-bottom: 6px;
-    font-size: 12px;
-  }
-  .hc-flag.red { background: rgba(217,79,79,.1); border: 1px solid rgba(217,79,79,.25); color: #e88; }
-  .hc-flag.amber { background: rgba(201,168,76,.08); border: 1px solid rgba(201,168,76,.2); color: var(--gold); }
-  .hc-flag.green { background: rgba(61,158,114,.08); border: 1px solid rgba(61,158,114,.2); color: #5bc898; }
-  .hc-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-  .hc-flag.red .hc-dot { background: var(--red); }
-  .hc-flag.amber .hc-dot { background: var(--gold); }
-  .hc-flag.green .hc-dot { background: var(--green); }
-
-  .rule { border: none; border-top: 1px solid var(--border); }
-
-  .section { padding: 80px 40px; max-width: 1140px; margin: 0 auto; }
-  .section-label {
-    font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: .18em;
-    text-transform: uppercase; color: var(--gold); margin-bottom: 12px;
-  }
-  .section-h {
-    font-family: 'Bebas Neue', sans-serif; font-size: clamp(36px, 5vw, 54px);
-    letter-spacing: .04em; line-height: 1; margin-bottom: 16px;
-  }
-  .section-sub { font-size: 16px; color: var(--ink2); max-width: 560px; line-height: 1.75; }
-
-  .reality-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin-top: 48px;
-    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
-  }
-  .reality-cell {
-    padding: 28px; background: var(--bg2);
-    border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
-  }
-  .reality-cell:nth-child(2n) { border-right: none; }
-  .reality-cell:nth-last-child(-n+2) { border-bottom: none; }
-  .rc-num {
-    font-family: 'Bebas Neue', sans-serif; font-size: 42px;
-    color: var(--gold); line-height: 1; margin-bottom: 8px;
-  }
-  .rc-label { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-  .rc-desc { font-size: 13px; color: var(--ink2); line-height: 1.65; }
-
-  .features-wrap { background: var(--bg2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  .feat-grid {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
-    background: var(--border);
-  }
-  .feat-cell { background: var(--bg2); padding: 28px 26px; }
-  .feat-icon { font-size: 22px; margin-bottom: 10px; }
-  .feat-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-  .feat-desc { font-size: 13px; color: var(--ink2); line-height: 1.6; }
-
-  .pricing-grid {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
-    margin-top: 48px;
-  }
-  .pricing-card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; padding: 28px; position: relative; overflow: hidden;
-  }
-  .pricing-card.featured { border-color: var(--gold); }
-  .pricing-card.featured::before {
-    content: '';
-    position: absolute; top: 0; left: 0; right: 0; height: 2px;
-    background: var(--gold);
-  }
-  .pricing-badge {
-    display: inline-block; font-size: 10px; font-family: 'DM Mono', monospace;
-    letter-spacing: .12em; text-transform: uppercase; padding: 3px 10px;
-    border-radius: 20px; margin-bottom: 16px;
-  }
-  .badge-free { background: rgba(61,158,114,.1); color: #5bc898; border: 1px solid rgba(61,158,114,.2); }
-  .badge-cloud { background: rgba(201,168,76,.1); color: var(--gold); border: 1px solid rgba(201,168,76,.25); }
-  .badge-atty { background: rgba(42,108,246,.1); color: #6ea8fe; border: 1px solid rgba(42,108,246,.25); }
-  .pricing-name { font-size: 18px; font-weight: 600; margin-bottom: 6px; }
-  .pricing-price {
-    font-family: 'Bebas Neue', sans-serif; font-size: 48px; line-height: 1;
-    color: var(--gold); margin-bottom: 4px;
-  }
-  .pricing-price sub { font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 400; color: var(--ink2); }
-  .pricing-desc { font-size: 13px; color: var(--ink2); margin-bottom: 20px; line-height: 1.6; }
-  .pricing-list { list-style: none; }
-  .pricing-list li {
-    font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--border);
-    display: flex; gap: 8px; align-items: flex-start; color: var(--ink2);
-  }
-  .pricing-list li:last-child { border-bottom: none; }
-  .pricing-list li .check { color: var(--green); flex-shrink: 0; }
-  .pricing-list li .dash { color: var(--ink3); flex-shrink: 0; }
-  .pricing-action {
-    margin-top: 24px; width: 100%; padding: 12px; border-radius: 4px;
-    font-size: 14px; font-weight: 600; cursor: pointer; text-align: center;
-    text-decoration: none; display: block; transition: all .2s;
-  }
-  .pa-gold { background: var(--gold); color: #0a0f14; border: none; }
-  .pa-gold:hover { background: var(--gold2); }
-  .pa-outline { background: transparent; color: var(--ink2); border: 1px solid var(--border); }
-  .pa-outline:hover { border-color: var(--ink2); color: var(--ink); }
-  .pa-coming { background: rgba(42,108,246,.08); color: #6ea8fe; border: 1px solid rgba(42,108,246,.2); cursor: default; }
-  .coming-soon-label {
-    font-size: 10px; font-family: 'DM Mono', monospace; letter-spacing: .12em;
-    text-transform: uppercase; color: #6ea8fe; margin-top: 8px; display: block; text-align: center;
-  }
-
-  .capture-wrap {
-    background: var(--bg2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
-    padding: 80px 40px;
-  }
-  .capture-inner { max-width: 1140px; margin: 0 auto; }
-  .capture-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; margin-top: 48px; }
-  .capture-box {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 32px;
-  }
-  .cb-eyebrow {
-    font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: .16em;
-    text-transform: uppercase; margin-bottom: 10px;
-  }
-  .cb-eyebrow.gold { color: var(--gold); }
-  .cb-eyebrow.blue { color: #6ea8fe; }
-  .cb-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
-  .cb-desc { font-size: 13px; color: var(--ink2); line-height: 1.65; margin-bottom: 20px; }
-  .capture-form { display: flex; flex-direction: column; gap: 10px; }
-  .capture-form input, .capture-form select {
-    width: 100%; padding: 11px 14px;
-    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-    color: var(--ink); font-family: 'DM Sans', sans-serif; font-size: 14px;
-    outline: none; transition: border-color .2s;
-  }
-  .capture-form input:focus, .capture-form select:focus { border-color: var(--gold); }
-  .capture-form select option { background: var(--bg); }
-  .capture-btn {
-    padding: 12px; border-radius: 4px; font-size: 14px; font-weight: 600;
-    cursor: pointer; border: none; transition: all .2s;
-  }
-  .capture-btn.gold { background: var(--gold); color: #0a0f14; }
-  .capture-btn.gold:hover { background: var(--gold2); }
-  .capture-btn.blue { background: rgba(42,108,246,.12); color: #6ea8fe; border: 1px solid rgba(42,108,246,.2); }
-  .capture-btn.blue:hover { background: rgba(42,108,246,.2); }
-  .capture-success {
-    display: none; padding: 14px; border-radius: 6px; font-size: 13px; text-align: center;
-    background: rgba(61,158,114,.1); border: 1px solid rgba(61,158,114,.25); color: #5bc898;
-  }
-
-  .trust-row {
-    display: flex; gap: 40px; flex-wrap: wrap;
-    padding: 40px; max-width: 1140px; margin: 0 auto;
-    border-bottom: 1px solid var(--border);
-  }
-  .trust-item { display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 200px; }
-  .trust-icon { font-size: 18px; flex-shrink: 0; margin-top: 2px; }
-  .trust-text { font-size: 13px; color: var(--ink2); line-height: 1.6; }
-  .trust-text strong { color: var(--ink); display: block; margin-bottom: 2px; }
-
-  footer {
-    padding: 28px 40px;
-    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
-  }
-  footer p { font-size: 12px; color: var(--ink3); }
-  footer a { font-size: 12px; color: var(--ink3); text-decoration: none; }
-  footer a:hover { color: var(--gold); }
-
-  @media (max-width: 860px) {
-    .hero { grid-template-columns: 1fr; padding: 60px 20px 40px; gap: 40px; }
-    .hero-card { display: none; }
-    .section { padding: 60px 20px; }
-    .reality-grid { grid-template-columns: 1fr; }
-    .reality-cell { border-right: none; }
-    .feat-grid { grid-template-columns: 1fr 1fr; }
-    .pricing-grid { grid-template-columns: 1fr; }
-    .capture-grid { grid-template-columns: 1fr; }
-    nav { padding: 14px 20px; }
-    .trust-row { padding: 30px 20px; }
-    footer { padding: 20px; }
-  }
-  @media (max-width: 560px) {
-    .feat-grid { grid-template-columns: 1fr; }
-    nav .nav-logo span { display: none; }
-  }
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.6}
+  nav{display:flex;align-items:center;justify-content:space-between;padding:18px 40px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(13,27,42,0.95);backdrop-filter:blur(8px);z-index:100}
+  .nav-logo{font-size:20px;font-weight:700;color:var(--gold);letter-spacing:.04em}
+  .nav-links{display:flex;gap:12px;align-items:center}
+  .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--ink2);border-radius:6px;padding:8px 18px;font-size:14px;cursor:pointer;text-decoration:none;transition:all .2s}
+  .btn-ghost:hover{border-color:var(--gold);color:var(--gold)}
+  .btn-primary{background:var(--gold);color:var(--bg);border:none;border-radius:6px;padding:9px 22px;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;transition:background .2s}
+  .btn-primary:hover{background:var(--gold2)}
+  .hero{max-width:760px;margin:0 auto;padding:90px 24px 80px;text-align:center}
+  .hero-eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--gold);margin-bottom:20px}
+  .hero h1{font-size:clamp(32px,5vw,52px);font-weight:700;line-height:1.15;color:var(--ink);margin-bottom:24px}
+  .hero p{font-size:18px;color:var(--ink2);max-width:600px;margin:0 auto 36px;line-height:1.7}
+  .hero-cta{display:inline-block;background:var(--gold);color:var(--bg);border:none;border-radius:8px;padding:15px 36px;font-size:16px;font-weight:700;cursor:pointer;text-decoration:none;transition:background .2s}
+  .hero-cta:hover{background:var(--gold2)}
+  .hero-note{font-size:13px;color:var(--ink3);margin-top:14px}
+  .origin{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:36px 24px;text-align:center}
+  .origin p{max-width:620px;margin:0 auto;font-size:15px;color:var(--ink2);font-style:italic;line-height:1.75}
+  .origin strong{color:var(--ink);font-style:normal}
+  .features{max-width:900px;margin:0 auto;padding:80px 24px}
+  .features h2{font-size:26px;font-weight:700;text-align:center;margin-bottom:10px}
+  .features .sub{text-align:center;color:var(--ink3);font-size:15px;margin-bottom:52px}
+  .feature-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px}
+  .feature-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px 24px}
+  .feature-icon{font-size:28px;margin-bottom:14px}
+  .feature-card h3{font-size:16px;font-weight:600;color:var(--ink);margin-bottom:10px}
+  .feature-card p{font-size:14px;color:var(--ink2);line-height:1.65}
+  .for-section{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:70px 24px;text-align:center}
+  .for-section h2{font-size:24px;font-weight:700;margin-bottom:16px}
+  .for-section p{max-width:580px;margin:0 auto;font-size:15px;color:var(--ink2);line-height:1.75}
+  .trust{max-width:760px;margin:0 auto;padding:70px 24px;display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  @media(max-width:560px){.trust{grid-template-columns:1fr}}
+  .trust-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px}
+  .trust-card h3{font-size:14px;font-weight:600;color:var(--gold);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px}
+  .trust-card p{font-size:14px;color:var(--ink2);line-height:1.65}
+  .cta-bottom{text-align:center;padding:80px 24px 100px;background:var(--bg)}
+  .cta-bottom h2{font-size:28px;font-weight:700;margin-bottom:14px}
+  .cta-bottom p{font-size:15px;color:var(--ink2);margin-bottom:32px}
+  .cta-bottom a{display:inline-block;background:var(--gold);color:var(--bg);border-radius:8px;padding:15px 36px;font-size:16px;font-weight:700;text-decoration:none;transition:background .2s}
+  .cta-bottom a:hover{background:var(--gold2)}
+  footer{border-top:1px solid var(--border);padding:24px 40px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+  footer p{font-size:12px;color:var(--ink3)}
+  footer a{color:var(--ink3);text-decoration:none;font-size:12px}
+  footer a:hover{color:var(--gold)}
 </style>
 </head>
 <body>
 
 <nav>
-  <div class="nav-logo">SYNJURIS <span>Legal Case Platform</span></div>
+  <div class="nav-logo">SynJuris</div>
   <div class="nav-links">
-    <a href="#pricing" class="btn-ghost">Pricing</a>
     <a href="/login" class="btn-ghost">Sign In</a>
-    <a href="/login" class="btn-cta">Get Started Free</a>
+    <a href="/login" class="btn-primary">Get Started Free</a>
   </div>
 </nav>
 
-<section style="background:var(--bg)">
-  <div class="hero">
-    <div>
-      <div class="hero-eyebrow">// pro se legal platform</div>
-      <h1>You're in this.<br><em>Let's win it.</em></h1>
-      <p class="hero-sub">
-        You didn't choose to be here. But you're here, and the other side has a lawyer.
-        <strong>SynJuris gives you what you need to walk into that courtroom ready</strong> —
-        organized evidence, tracked deadlines, real documents, and an AI that knows your case.
-      </p>
-      <div class="hero-actions">
-        <a href="/login" class="btn-hero primary">Start Free — No Card Required</a>
-        <a href="#pricing" class="btn-hero secondary">See Pricing</a>
-      </div>
-      <p class="hero-note">Free tier runs locally. Your data never leaves your machine.</p>
+<section class="hero">
+  <div class="hero-eyebrow">For pro se litigants</div>
+  <h1>You shouldn't have to fight this alone.<br>Now you don't.</h1>
+  <p>SynJuris organizes your evidence, tracks your deadlines, and helps you show up to court prepared — even if this is your first time.</p>
+  <a href="/login" class="hero-cta">Start your case free →</a>
+  <div class="hero-note">No credit card. No lawyer required.</div>
+</section>
+
+<div class="origin">
+  <p><strong>SynJuris was built by a father</strong> who was being kept from his son and couldn't afford an attorney. He built the tool he needed — and made it available to everyone who needs it now.</p>
+</div>
+
+<section class="features">
+  <h2>Everything SynJuris does for you</h2>
+  <p class="sub">Built for the reality of representing yourself in court. Not watered down. Not simplified. The real thing.</p>
+  <div class="feature-grid">
+
+    <div class="feature-card">
+      <div class="feature-icon">📁</div>
+      <h3>Evidence organizer with legal weight scoring</h3>
+      <p>Every piece of evidence — texts, emails, photos, documents — logged, categorized, and automatically scored by legal significance. Courts weight evidence differently. SynJuris knows that.</p>
     </div>
-    <div class="hero-card">
-      <div class="hc-label">// Case State — Live</div>
-      <div class="hc-stat">
-        <div class="hc-row"><span>Evidence Strength</span><span style="color:var(--gold)">7 / 9</span></div>
-        <div class="hc-bar-wrap"><div class="hc-bar" style="width:77%;background:linear-gradient(90deg,var(--green),var(--gold))"></div></div>
-      </div>
-      <div class="hc-stat">
-        <div class="hc-row"><span>Procedural Health</span><span style="color:var(--gold)">8 / 9</span></div>
-        <div class="hc-bar-wrap"><div class="hc-bar" style="width:88%;background:linear-gradient(90deg,var(--accent),var(--green))"></div></div>
-      </div>
-      <div class="hc-stat">
-        <div class="hc-row"><span>Adversarial Pressure</span><span style="color:var(--red)">6 / 9</span></div>
-        <div class="hc-bar-wrap"><div class="hc-bar" style="width:66%;background:linear-gradient(90deg,var(--gold),var(--red))"></div></div>
-      </div>
-      <div class="hc-flags">
-        <div class="hc-flag red"><div class="hc-dot"></div>Exhibit 7 — Gatekeeping (strong)</div>
-        <div class="hc-flag amber"><div class="hc-dot"></div>Response deadline in 4 days</div>
-        <div class="hc-flag green"><div class="hc-dot"></div>Hearing prep guide generated</div>
-      </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🚩</div>
+      <h3>Real-time violation detection</h3>
+      <p>Log a communication and SynJuris automatically scans it for gatekeeping, parental alienation, threats, harassment, order violations, stonewalling, and relocation attempts — flagged before you forget the details.</p>
     </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">⏱</div>
+      <h3>Deadline tracking with overdue alerts</h3>
+      <p>Every filing date, response deadline, and hearing tracked in one place. Overdue items surface immediately. Missing a court deadline can end your case — this prevents that.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🤖</div>
+      <h3>AI legal assistant — trained on your case</h3>
+      <p>Ask anything. The AI knows your evidence, your deadlines, your parties, and your jurisdiction. It answers in plain English, drafts documents, and helps you prepare — all with your actual case facts, not generic advice.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📄</div>
+      <h3>Document generator</h3>
+      <p>Generate motions, declarations, discovery requests, demand letters, parenting plans, and more — pre-filled with your case details and formatted for court. Not templates. Actual drafts.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">⚖️</div>
+      <h3>Courtroom view & hearing prep</h3>
+      <p>Walk into your hearing prepared. SynJuris generates your opening statement, key points, exhibit list, and full hearing prep guide — organized the way a judge expects to hear it.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>Case dynamics engine</h3>
+      <p>A live score of your case across three dimensions: evidence strength, procedural health, and adversarial pressure. Deterministic, auditable, and updated every time you add evidence.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🗓</div>
+      <h3>Timeline builder</h3>
+      <p>Build a chronological timeline of your case. Flag high-importance events. See the story of your case the way a judge will — in order, with context, and without gaps.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">💬</div>
+      <h3>Communication log</h3>
+      <p>Log every call, text, email, and in-person interaction with the other party. Channel, direction, date, and content — all recorded and automatically scanned for violation patterns.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">💰</div>
+      <h3>Child support calculator</h3>
+      <p>Estimate support using your state's actual formula and statute. Shows the math step by step, factors that could change the outcome, and how to request a modification.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🗺</div>
+      <h3>Legal roadmap</h3>
+      <p>A step-by-step guide to your specific case type — what to file, when to file it, what comes next. Built around your jurisdiction and where you are in the process.</p>
+    </div>
+
+    <div class="feature-card">
+      <div class="feature-icon">🔒</div>
+      <h3>Encrypted backup & audit trail</h3>
+      <p>Every AI interaction is logged with a tamper-evident hash. Export an encrypted backup of your entire case at any time. Your data is verifiable and yours.</p>
+    </div>
+
   </div>
 </section>
 
-<hr class="rule">
+<div class="for-section">
+  <h2>Who this is for</h2>
+  <p>SynJuris is for anyone navigating family court without an attorney — custody disputes, visitation enforcement, support modifications, protective orders. If you're representing yourself and feeling overwhelmed, this was built for you.</p>
+</div>
 
-<div class="section">
-  <div class="section-label">// the situation</div>
-  <h2 class="section-h">WHAT YOU'RE<br>UP AGAINST</h2>
-  <p class="section-sub">
-    Family court is adversarial. The other side is organized. Most pro se litigants lose not because
-    they're wrong — but because they showed up unprepared. SynJuris fixes that.
-  </p>
-  <div class="reality-grid">
-    <div class="reality-cell">
-      <div class="rc-num">14</div>
-      <div class="rc-label">Evidence categories tracked automatically</div>
-      <div class="rc-desc">Gatekeeping, order violations, threats, financial abuse, parental alienation — flagged the moment you log them.</div>
-    </div>
-    <div class="reality-cell">
-      <div class="rc-num">0</div>
-      <div class="rc-label">Missed deadlines when you use it right</div>
-      <div class="rc-desc">Overdue filings cost you credibility. Every due date tracked, every overdue item surfaced immediately.</div>
-    </div>
-    <div class="reality-cell">
-      <div class="rc-num">50</div>
-      <div class="rc-label">State jurisdictions with built-in statutes</div>
-      <div class="rc-desc">Every generated document cites the actual statute number for your state — not generic advice.</div>
-    </div>
-    <div class="reality-cell">
-      <div class="rc-num">∞</div>
-      <div class="rc-label">Evidence items you can log</div>
-      <div class="rc-desc">Import entire SMS backups. Attach photos, PDFs, recordings. Everything organized, dated, and weighted by legal significance.</div>
-    </div>
+<div class="trust">
+  <div class="trust-card">
+    <h3>Your data is yours. Full stop.</h3>
+    <p>Everything you enter stays on your account and is never shared, sold, or used against you. Your case is private. Your story is safe here.</p>
+  </div>
+  <div class="trust-card">
+    <h3>This is not legal advice.</h3>
+    <p>SynJuris helps you organize, document, and prepare. It does not replace an attorney. What it does is make sure that if you walk into that courtroom alone, you walk in prepared.</p>
   </div>
 </div>
 
-<div class="features-wrap">
-  <div class="section" style="padding-bottom:0">
-    <div class="section-label">// what it does</div>
-    <h2 class="section-h">THE FULL TOOLKIT</h2>
-  </div>
-  <div class="section" style="padding-top:32px">
-    <div class="feat-grid">
-      <div class="feat-cell">
-        <div class="feat-icon">📂</div>
-        <div class="feat-title">Evidence Engine</div>
-        <div class="feat-desc">Every item logged, categorized, and scored by legal weight. Import SMS backups. Attach files. Confirm or reject auto-flags.</div>
-      </div>
-      <div class="feat-cell">
-        <div class="feat-icon">🚩</div>
-        <div class="feat-title">Auto-Violation Detection</div>
-        <div class="feat-desc">Pattern-matching against 14 legal categories scans every entry the moment it's logged. Strong, likely, or possible — you decide.</div>
-      </div>
-      <div class="feat-cell">
-        <div class="feat-icon">⏱</div>
-        <div class="feat-title">Deadline Tracker</div>
-        <div class="feat-desc">Overdue filings surface immediately. Upcoming deadlines sorted by urgency. Nothing slips through.</div>
-      </div>
-      <div class="feat-cell">
-        <div class="feat-icon">📄</div>
-        <div class="feat-title">Document Generator</div>
-        <div class="feat-desc">Motions, declarations, parenting plans, demand letters — complete drafts pre-filled with your facts and your state's statutes.</div>
-      </div>
-      <div class="feat-cell">
-        <div class="feat-icon">🤖</div>
-        <div class="feat-title">AI Legal Info Finder</div>
-        <div class="feat-desc">An AI that knows your case — your evidence, your jurisdiction, your deadlines. Ask it anything. Plain English answers.</div>
-      </div>
-      <div class="feat-cell">
-        <div class="feat-icon">⚖️</div>
-        <div class="feat-title">Hearing Prep Mode</div>
-        <div class="feat-desc">Opening statement, exhibit list, anticipated arguments, courtroom etiquette — all ready before you walk in.</div>
-      </div>
-      <div class="feat-cell">
-        <div class="feat-icon">📊</div>
-        <div class="feat-title">Case Dynamics Engine</div>
-        <div class="feat-desc">A live, auditable score across evidence strength, procedural health, and adversarial pressure. Deterministic. Tamper-evident.</div>
-      </div>
-      <div class="feat-cell">
-        <div class="feat-icon">🗺</div>
-        <div class="feat-title">Case Roadmap</div>
-        <div class="feat-desc">AI-generated roadmap of where you are, what comes next, and what decision points will branch your path.</div>
-      </div>
-      <div class="feat-cell">
-        <div class="feat-icon">🔐</div>
-        <div class="feat-title">Encrypted Backup</div>
-        <div class="feat-desc">AES-256-GCM encrypted backup. The server never sees your passphrase. Only you can open it.</div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="section" id="pricing">
-  <div class="section-label">// pricing</div>
-  <h2 class="section-h">PICK YOUR SETUP</h2>
-  <p class="section-sub">Start free. Run it locally. Upgrade when you need more. No hidden fees, no data sold, no ads — ever.</p>
-  <div class="pricing-grid">
-    <div class="pricing-card">
-      <div class="pricing-badge badge-free">Free Forever</div>
-      <div class="pricing-name">Local</div>
-      <div class="pricing-price">$0 <sub>/ mo</sub></div>
-      <div class="pricing-desc">Download and run SynJuris on your own computer. Full feature access. Your data never leaves your machine.</div>
-      <ul class="pricing-list">
-        <li><span class="check">✓</span> All evidence, timeline &amp; deadline tools</li>
-        <li><span class="check">✓</span> Full document generator</li>
-        <li><span class="check">✓</span> AI legal info finder (your API key)</li>
-        <li><span class="check">✓</span> Hearing prep, roadmap, dynamics engine</li>
-        <li><span class="check">✓</span> Encrypted local backup</li>
-        <li><span class="check">✓</span> Work-product protection — no 3rd-party transmission</li>
-        <li><span class="dash">–</span> Requires Python to run locally</li>
-        <li><span class="dash">–</span> No cloud sync or mobile access</li>
-      </ul>
-      <a href="/login" class="pricing-action pa-gold">Download &amp; Get Started</a>
-    </div>
-    <div class="pricing-card featured">
-      <div class="pricing-badge badge-cloud">Most Popular</div>
-      <div class="pricing-name">Cloud</div>
-      <div class="pricing-price">$79 <sub>/ mo</sub></div>
-      <div class="pricing-desc">Everything in Local, hosted securely. Access from any device. No setup. Just sign in and go.</div>
-      <ul class="pricing-list">
-        <li><span class="check">✓</span> Everything in Local</li>
-        <li><span class="check">✓</span> Access from any device, any browser</li>
-        <li><span class="check">✓</span> AI included — no separate API key needed</li>
-        <li><span class="check">✓</span> Automatic backups</li>
-        <li><span class="check">✓</span> Priority support</li>
-        <li><span class="check">✓</span> Case Readiness PDF reports</li>
-        <li><span class="dash">–</span> Attorney features not included</li>
-      </ul>
-      <a href="#beta" class="pricing-action pa-gold">Join the Waitlist</a>
-      <span class="coming-soon-label">☁ Cloud — Coming Soon</span>
-    </div>
-    <div class="pricing-card">
-      <div class="pricing-badge badge-atty">Professional</div>
-      <div class="pricing-name">Attorney</div>
-      <div class="pricing-price">— <sub></sub></div>
-      <div class="pricing-desc">Built for legal professionals managing pro se clients or running a high-volume family law practice.</div>
-      <ul class="pricing-list">
-        <li><span class="check">✓</span> Everything in Cloud</li>
-        <li><span class="check">✓</span> Client portal — clients submit evidence for review</li>
-        <li><span class="check">✓</span> Conflict check across all cases</li>
-        <li><span class="check">✓</span> Time entry tracking + CSV export</li>
-        <li><span class="check">✓</span> Redacted case summary export</li>
-        <li><span class="check">✓</span> Multi-case management dashboard</li>
-      </ul>
-      <a href="#beta" class="pricing-action pa-coming">Contact for Pricing</a>
-      <span class="coming-soon-label">⚖ Attorney Tier — Coming Soon</span>
-    </div>
-  </div>
-</div>
-
-<div class="capture-wrap" id="beta">
-  <div class="capture-inner">
-    <div class="section-label" style="color:var(--ink2)">// stay in the loop</div>
-    <h2 class="section-h">GET EARLY ACCESS</h2>
-    <p class="section-sub" style="color:var(--ink2)">
-      The free local version is available right now. Cloud and Attorney tiers are in active development.
-      Drop your email and we'll tell you when it's ready.
-    </p>
-    <div class="capture-grid">
-      <div class="capture-box">
-        <div class="cb-eyebrow gold">// beta program</div>
-        <div class="cb-title">Test Before Launch</div>
-        <div class="cb-desc">
-          We're looking for active pro se litigants to test the cloud version before public release.
-          Get early access, give feedback, and help shape the product.
-        </div>
-        <form class="capture-form" onsubmit="submitCapture(event,'beta','beta-success')">
-          <input type="email" id="beta-email" placeholder="your@email.com" required>
-          <input type="text" id="beta-state" placeholder="Your state (e.g. Tennessee)">
-          <select id="beta-type">
-            <option value="">Case type (optional)</option>
-            <option>Child Custody</option>
-            <option>Divorce</option>
-            <option>Child Support</option>
-            <option>Protective Order</option>
-            <option>Landlord-Tenant</option>
-            <option>Other</option>
-          </select>
-          <button type="submit" class="capture-btn gold">Apply for Beta Access →</button>
-        </form>
-        <div class="capture-success" id="beta-success">✓ You're on the beta list. We'll be in touch.</div>
-      </div>
-      <div class="capture-box">
-        <div class="cb-eyebrow blue">// cloud waitlist</div>
-        <div class="cb-title">Notify Me at Launch</div>
-        <div class="cb-desc">
-          Not ready to test, but want the cloud version when it goes live?
-          We'll send one email — the launch announcement. Nothing else.
-        </div>
-        <form class="capture-form" onsubmit="submitCapture(event,'waitlist','waitlist-success')">
-          <input type="email" id="waitlist-email" placeholder="your@email.com" required>
-          <select id="waitlist-interest">
-            <option value="">I am a… (optional)</option>
-            <option>Pro se litigant</option>
-            <option>Family law attorney</option>
-            <option>Paralegal</option>
-            <option>Legal aid worker</option>
-            <option>Other legal professional</option>
-          </select>
-          <button type="submit" class="capture-btn blue">Notify Me at Launch →</button>
-        </form>
-        <div class="capture-success" id="waitlist-success">✓ You're on the waitlist. One email when it's live.</div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="trust-row">
-  <div class="trust-item">
-    <div class="trust-icon">🔒</div>
-    <div class="trust-text"><strong>No data sold. Ever.</strong>SynJuris doesn't run ads. Your case data is yours.</div>
-  </div>
-  <div class="trust-item">
-    <div class="trust-icon">⚖️</div>
-    <div class="trust-text"><strong>Legal information only.</strong>SynJuris is not a law firm. It organizes, prepares, and drafts — you decide.</div>
-  </div>
-  <div class="trust-item">
-    <div class="trust-icon">🏠</div>
-    <div class="trust-text"><strong>Free tier is fully local.</strong>Runs entirely on your computer. No cloud, no account required, no subscription.</div>
-  </div>
-  <div class="trust-item">
-    <div class="trust-icon">📜</div>
-    <div class="trust-text"><strong>Work-product protection.</strong>Cloud AI tools have been ruled non-privileged in federal proceedings. Local mode has no third-party transmission.</div>
-  </div>
+<div class="cta-bottom">
+  <h2>Ready to start?</h2>
+  <p>Free to create an account. No credit card. No catch.<br>A tool built by someone who needed it — for everyone who needs it now.</p>
+  <a href="/login">Create your free account →</a>
 </div>
 
 <footer>
-  <p>© 2025 SynJuris. Built for people who have to show up and fight.</p>
-  <div style="display:flex;gap:20px">
-    <a href="/login">Sign In</a>
-    <a href="#pricing">Pricing</a>
-    <a href="#beta">Waitlist</a>
-  </div>
+  <p>© 2025 SynJuris. Built for pro se litigants.</p>
+  <a href="/login">Sign in</a>
 </footer>
 
-<script>
-function submitCapture(e, type, successId) {
-  e.preventDefault();
-  const form = e.target;
-  form.style.display = 'none';
-  document.getElementById(successId).style.display = 'block';
-}
-</script>
 </body>
 </html>"""
+
+LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
