@@ -4467,7 +4467,7 @@ html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--sa
 .api-pill.on .api-dot{background:var(--green)}
 
 /* sidebar */
-#sidebar{background:var(--surface2);border-right:1px solid var(--gold-bd);display:flex;flex-direction:column;overflow:hidden}
+#sidebar{grid-row:2;background:var(--surface2);border-right:1px solid var(--gold-bd);display:flex;flex-direction:column;overflow:hidden}
 #sb-head{padding:14px 14px 10px;border-bottom:1px solid var(--border2)}
 #sb-head p{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);margin-bottom:8px}
 #new-btn{width:100%;background:transparent;color:var(--gold);border:1px solid var(--gold-bd);border-radius:var(--r);padding:8px 10px;font-family:var(--sans);font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s}
@@ -4480,9 +4480,9 @@ html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--sa
 .ci-m{font-size:12px;color:var(--ink3);margin-top:2px}
 
 /* main */
-#main{overflow:hidden;display:flex;flex-direction:column}
+#main{grid-row:2;overflow:hidden;display:flex;flex-direction:column}
 #welcome{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px;gap:14px}
-#welcome h2{font-family:var(--serif);font-size:30px;line-height:1.25}
+#welcome h2{font-family:var(--serif);font-size:clamp(24px,3.5vw,48px);line-height:1.25}
 #welcome p{color:var(--ink2);max-width:360px;font-size:13px}
 .pill-tag{font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:5px 14px;color:var(--ink2)}
 
@@ -4631,7 +4631,7 @@ textarea{resize:vertical;min-height:72px}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{display:inline-block;animation:spin .9s linear infinite}
-@media(max-width:768px){
+@media(max-width:700px){
   #app{grid-template-columns:1fr;grid-template-rows:50px 1fr}
   #sidebar{position:fixed;left:0;top:50px;bottom:0;width:260px;z-index:150;transform:translateX(-100%);transition:transform .25s ease}
   #sidebar.open{transform:translateX(0)}
@@ -4697,7 +4697,7 @@ textarea{resize:vertical;min-height:72px}
 
 <div id="main">
   <div id="welcome">
-    <h2 style="font-family:var(--serif);font-size:48px;color:var(--gold);letter-spacing:.1em;margin-bottom:10px">SYNJURIS</h2>
+    <h2 style="font-family:var(--serif);color:var(--gold);letter-spacing:.1em;margin-bottom:10px">SYNJURIS</h2>
     <div style="font-size:12px;letter-spacing:.18em;color:var(--ink3);text-transform:uppercase;margin-bottom:24px">LOCAL-FIRST &nbsp;&middot;&nbsp; AI-ASSISTED &nbsp;&middot;&nbsp; DATA SECURITY</div>
     <p style="color:var(--ink2);max-width:480px;font-size:16px;line-height:1.9;margin-bottom:20px">Built for pro se litigants. Organize evidence, understand your rights, draft documents, and prepare for court — all running locally. Your data never leaves this computer.</p>
     <div style="max-width:480px;padding:14px 18px;background:rgba(201,168,76,.08);border:1px solid rgba(201,168,76,.25);border-radius:8px;margin-bottom:28px">
