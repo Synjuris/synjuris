@@ -1,4 +1,4 @@
-"""
+="""
 SynJuris — Local Legal Assistant for Pro Se Litigants
 Run:  python3 server.py
 Open: http://localhost:5000
@@ -145,10 +145,10 @@ class _PGCursor:
         # Convert ? to %s
         sql = sql.replace("?", "%s")
         # For INSERT statements, add RETURNING id to get lastrowid
-        if sql.strip().upper().startswith("INSERT") and "RETURNING" not in sql.upper():
+        if sql.lstrip().upper().startswith("INSERT") and "RETURNING" not in sql.upper():
             sql = sql.rstrip("; \n") + " RETURNING id"
         self._cur.execute(sql, params or ())
-        if sql.strip().upper().startswith("INSERT"):
+        if sql.lstrip().upper().startswith("INSERT"):
             try:
                 row = self._cur.fetchone()
                 self.lastrowid = row["id"] if row else None
@@ -177,6 +177,9 @@ class _PGCursor:
 
 
 class _PGConn:
+    def cursor(self):
+        return self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
     """Wraps psycopg2 connection to behave like sqlite3 connection."""
     def __init__(self, dsn):
         self._conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
@@ -250,7 +253,7 @@ def init_db():
     if USE_POSTGRES:
         cur = conn.cursor()
         # PostgreSQL schema — all tables in one shot
-        cur.execute("""
+        conn.executescript(\"\"\"
         CREATE TABLE IF NOT EXISTS schema_version (
             version INTEGER PRIMARY KEY,
             applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -398,7 +401,7 @@ def init_db():
             result_json TEXT,
             verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        """)
+        \"\"\")
         conn.commit()
         cur.close()
         conn.close()
@@ -1091,7 +1094,8 @@ def compute_guidance(case_id):
             "action_tab": "deadlines",
         })
 
-    if days_to_hearing is not None and 0 <= days_to_hearing <= 7:
+    if days_to_hearing is not None and 0 <= days_to_hearing:
+_hearing <= 7:
         actions.append({
             "priority": 1, "level": "critical", "icon": "⚖️",
             "title": f"Hearing in {days_to_hearing} day{'s' if days_to_hearing!=1 else ''}",
@@ -2427,7 +2431,7 @@ class Handler(BaseHTTPRequestHandler):
             token = create_session(uid)
             self.send_response(200)
             self.send_header("Content-Type","application/json")
-            self.send_header("Set-Cookie", f"sj_token={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
+            self.send_header("Set-Cookie", f"sj_token={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
             b2 = json.dumps({"ok":True}).encode()
             self.send_header("Content-Length", len(b2))
             self.end_headers(); self.wfile.write(b2); return
