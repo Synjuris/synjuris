@@ -2427,7 +2427,7 @@ class Handler(BaseHTTPRequestHandler):
             token = create_session(uid)
             self.send_response(200)
             self.send_header("Content-Type","application/json")
-            self.send_header("Set-Cookie", f"sj_token={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
+            self.send_header("Set-Cookie", f"sj_token={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
             b2 = json.dumps({"ok":True}).encode()
             self.send_header("Content-Length", len(b2))
             self.end_headers(); self.wfile.write(b2); return
