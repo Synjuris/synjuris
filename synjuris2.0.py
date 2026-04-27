@@ -1,5 +1,5 @@
 """
-SynJuris v2.0.0 — Upgraded Architecture
+synjuris.py — Upgraded Architecture
 ========================================
 Integrates all v2 modules into the existing server pattern.
 
