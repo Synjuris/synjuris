@@ -1,22 +1,20 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════
-#  SynJuris — Mac/Linux Launcher
-#  Double-click this file to start SynJuris.
-#  On first run: right-click → Open (to bypass Gatekeeper).
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SynJuris v2 — Mac/Linux Launcher
+#  Checks for optional v2 dependencies and installs them if you want them.
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Move to the folder containing this script (where synjuris-10.py lives)
 cd "$(dirname "$0")"
 
 clear
 echo ""
-echo "  ╔══════════════════════════════════════════════════╗"
-echo "  ║           SynJuris Legal Assistant               ║"
-echo "  ║     Local-First · AI-Assisted · Your Data        ║"
-echo "  ╚══════════════════════════════════════════════════╝"
+echo "  ╔═══════════════════════════════════════════════════════╗"
+echo "  ║           SynJuris v2 — Advanced Architecture         ║"
+echo "  ║     Merkle DAG · Semantic AI · Streaming · Local      ║"
+echo "  ╚═══════════════════════════════════════════════════════╝"
 echo ""
 
-# ── 1. Check Python 3 ────────────────────────────────────────
+# ── 1. Check Python 3.9+ ─────────────────────────────────────────────────────
 PYTHON=""
 for cmd in python3 python3.12 python3.11 python3.10 python3.9; do
     if command -v "$cmd" &>/dev/null; then
@@ -31,70 +29,110 @@ for cmd in python3 python3.12 python3.11 python3.10 python3.9; do
 done
 
 if [ -z "$PYTHON" ]; then
-    echo "  ✗  Python 3.9 or later is required but not found."
-    echo ""
-    echo "  Install it from: https://www.python.org/downloads/"
-    echo "  Or with Homebrew: brew install python3"
-    echo ""
-    echo "  Press Enter to exit."
-    read -r
-    exit 1
+    echo "  ✗  Python 3.9 or later required. Install from python.org"
+    read -r; exit 1
 fi
-
 echo "  ✓  Python: $($PYTHON --version)"
 
-# ── 2. Check synjuris-10.py exists ───────────────────────────
-if [ ! -f "synjuris-10.py" ]; then
-    echo "  ✗  synjuris-10.py not found in this folder."
-    echo "     Make sure launch_synjuris_mac.command is in the"
-    echo "     same folder as synjuris-10.py"
-    echo ""
-    echo "  Press Enter to exit."
-    read -r
-    exit 1
+# ── 2. Check synjuris-20.py ──────────────────────────────────────────────────
+if [ ! -f "synjuris-20.py" ]; then
+    # Try falling back to synjuris-10.py
+    if [ -f "synjuris-10.py" ]; then
+        echo "  ⚠  synjuris-20.py not found — launching synjuris-10.py (v1)"
+        SCRIPT="synjuris-10.py"
+    else
+        echo "  ✗  No SynJuris script found in this folder."
+        read -r; exit 1
+    fi
+else
+    SCRIPT="synjuris-20.py"
+    echo "  ✓  $SCRIPT found"
 fi
 
-echo "  ✓  synjuris-10.py found"
-
-# ── 3. API key (optional — AI features only) ─────────────────
+# ── 3. API key ────────────────────────────────────────────────────────────────
 if [ -z "$ANTHROPIC_API_KEY" ]; then
     echo ""
-    echo "  ─────────────────────────────────────────────────────"
-    echo "  AI features (document drafting, case analysis, chat)"
-    echo "  require an Anthropic API key."
-    echo ""
+    echo "  ─────────────────────────────────────────────────────────"
+    echo "  AI features require an Anthropic API key."
     echo "  Get a free key at: https://console.anthropic.com"
     echo ""
-    echo "  You can paste your key here (or press Enter to skip):"
-    echo "  Everything else works without a key."
-    echo "  ─────────────────────────────────────────────────────"
+    echo "  Paste your key here (or Enter to skip):"
+    echo "  ─────────────────────────────────────────────────────────"
     printf "  API key: "
     read -r USER_KEY
     if [ -n "$USER_KEY" ]; then
         export ANTHROPIC_API_KEY="$USER_KEY"
-        echo ""
         echo "  ✓  API key set for this session."
-        echo ""
-        echo "  To make this permanent, add to your shell profile:"
-        echo "  export ANTHROPIC_API_KEY=\"$USER_KEY\""
-        echo "  (~/.zshrc on macOS 10.15+, ~/.bash_profile on older)"
     else
-        echo ""
-        echo "  Continuing without API key — AI features will be disabled."
+        echo "  Continuing without API key — AI features disabled."
     fi
 else
     echo "  ✓  API key: set (from environment)"
 fi
 
-# ── 4. Launch ─────────────────────────────────────────────────
+# ── 4. Optional v2 enhancements ──────────────────────────────────────────────
 echo ""
+echo "  ─────────────────────────────────────────────────────────"
+echo "  SynJuris v2 has optional enhancements:"
+echo ""
+echo "  • Streaming generation (real-time text as it's written)"
+echo "    → pip install anthropic"
+echo ""
+echo "  • Semantic pattern detection (catches paraphrased violations)"
+echo "    → pip install sentence-transformers"
+echo ""
+echo "  • Advanced negation detection"
+echo "    → pip install spacy && python -m spacy download en_core_web_sm"
+echo ""
+echo "  Install optional enhancements now? (y/N)"
+echo "  ─────────────────────────────────────────────────────────"
+printf "  Install? [y/N]: "
+read -r INSTALL_CHOICE
+
+if [[ "$INSTALL_CHOICE" =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "  Installing Anthropic SDK (streaming)..."
+    if $PYTHON -m pip install anthropic --quiet --break-system-packages 2>/dev/null || \
+       $PYTHON -m pip install anthropic --quiet 2>/dev/null; then
+        echo "  ✓  anthropic"
+    else
+        echo "  ⚠  anthropic install failed (optional)"
+    fi
+
+    echo "  Installing sentence-transformers (semantic patterns)..."
+    if $PYTHON -m pip install sentence-transformers --quiet --break-system-packages 2>/dev/null || \
+       $PYTHON -m pip install sentence-transformers --quiet 2>/dev/null; then
+        echo "  ✓  sentence-transformers"
+    else
+        echo "  ⚠  sentence-transformers install failed (optional)"
+    fi
+
+    echo "  Installing spaCy (negation detection)..."
+    if { $PYTHON -m pip install spacy --quiet --break-system-packages 2>/dev/null || \
+         $PYTHON -m pip install spacy --quiet 2>/dev/null; } && \
+       $PYTHON -m spacy download en_core_web_sm --quiet 2>/dev/null; then
+        echo "  ✓  spacy en_core_web_sm"
+    else
+        echo "  ⚠  spacy install failed (optional)"
+    fi
+
+    echo ""
+    echo "  ✓  Enhancement installation complete (failures above are non-critical)"
+else
+    echo ""
+    echo "  Skipping — SynJuris runs fully without these (falls back to v1 behavior)"
+fi
+
+# ── 5. Launch ─────────────────────────────────────────────────────────────────
+echo ""
+echo "  ═══════════════════════════════════════════════════════"
 echo "  Starting SynJuris on http://localhost:5000 ..."
 echo "  Press Ctrl+C to stop."
+echo "  ═══════════════════════════════════════════════════════"
 echo ""
 
-$PYTHON synjuris-10.py
+$PYTHON "$SCRIPT"
 
-# ── 5. Exit message ───────────────────────────────────────────
 echo ""
-echo "  SynJuris stopped. Press Enter to close this window."
+echo "  SynJuris stopped. Press Enter to close."
 read -r
