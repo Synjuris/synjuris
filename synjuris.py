@@ -801,7 +801,7 @@ def assign_exhibit_number(conn, case_id):
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── V1 HTML assets (merged for standalone deployment) ─────────────────────────
+# ── V1 HTML assets ────────────────────────────────────────────────────────────
 
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -888,36 +888,6 @@ document.addEventListener('keydown',function(e){if(e.key==='Enter'){
   if(document.getElementById('signup-form').style.display!=='none'){doSignup();}
   else{doLogin();}
 }});
-
-// ── Mobile sidebar toggle (injected) ────────────────────────────────────────
-(function(){
-  // Inject overlay element
-  const overlay = document.createElement('div');
-  overlay.id = 'mob-overlay';
-  document.getElementById('app').appendChild(overlay);
-
-  function closeSidebar(){
-    document.getElementById('sidebar').classList.remove('mob-open');
-    overlay.classList.remove('mob-open');
-  }
-  function toggleSidebar(){
-    const sb = document.getElementById('sidebar');
-    const open = sb.classList.toggle('mob-open');
-    overlay.classList.toggle('mob-open', open);
-  }
-
-  // Wire hamburger button
-  const btn = document.getElementById('mob-menu-btn');
-  if(btn) btn.addEventListener('click', toggleSidebar);
-
-  // Close when overlay tapped
-  overlay.addEventListener('click', closeSidebar);
-
-  // Close sidebar when a case is selected (on mobile)
-  document.getElementById('case-list').addEventListener('click', function(e){
-    if(window.innerWidth <= 680) closeSidebar();
-  });
-})();
 </script>
 </body>
 </html>"""
@@ -2107,32 +2077,12 @@ textarea{resize:vertical;min-height:72px}
   .badge{border:1px solid #999!important;background:none!important;color:#000!important}
   a[href]:after{content:" (" attr(href) ")"}
 }
-
-/* ── Mobile responsive (injected) ─────────────────────────────────────── */
-#mob-menu-btn{display:none;background:none;border:none;cursor:pointer;padding:6px 8px;color:var(--gold);font-size:20px;line-height:1;margin-right:4px}
-@media(max-width:680px){
-  #mob-menu-btn{display:block}
-  #app{grid-template-columns:1fr;grid-template-rows:50px 1fr}
-  #sidebar{
-    position:fixed;top:50px;left:0;bottom:0;width:260px;
-    transform:translateX(-100%);transition:transform .22s ease;
-    z-index:100;border-right:1px solid var(--gold-bd)
-  }
-  #sidebar.mob-open{transform:translateX(0)}
-  #mob-overlay{display:none;position:fixed;inset:0;top:50px;background:rgba(0,0,0,.55);z-index:99}
-  #mob-overlay.mob-open{display:block}
-  #main{grid-column:1;overflow-y:auto}
-  .topbar-tag{display:none}
-  #topbar h1{font-size:15px}
-  #apill{font-size:10px}
-}
 </style>
 </head>
 <body>
 <div id="app">
 
 <div id="topbar">
-  <button id="mob-menu-btn" aria-label="Menu">&#9776;</button>
   <h1>SYN<em>JURIS</em></h1>
   <span class="topbar-tag">AI-ASSISTED &nbsp;&middot;&nbsp; YOUR DATA STAYS YOURS</span>
   <div class="sp"></div>
@@ -4206,30 +4156,6 @@ function copyText(id){
 }
 
 init();
-
-// ── Mobile sidebar toggle (injected) ────────────────────────────────────────
-(function(){
-  const overlay = document.createElement('div');
-  overlay.id = 'mob-overlay';
-  document.getElementById('app').appendChild(overlay);
-
-  function closeSidebar(){
-    document.getElementById('sidebar').classList.remove('mob-open');
-    overlay.classList.remove('mob-open');
-  }
-  function toggleSidebar(){
-    const sb = document.getElementById('sidebar');
-    const open = sb.classList.toggle('mob-open');
-    overlay.classList.toggle('mob-open', open);
-  }
-
-  const btn = document.getElementById('mob-menu-btn');
-  if(btn) btn.addEventListener('click', toggleSidebar);
-  overlay.addEventListener('click', closeSidebar);
-  document.getElementById('case-list').addEventListener('click', function(){
-    if(window.innerWidth <= 680) closeSidebar();
-  });
-})();
 </script>
 </body>
 </html>"""
@@ -4269,14 +4195,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-    # ── V1 Frontend routes (merged for standalone deployment) ──────────────
-
     def _handle_frontend(self, path):
-        """Returns True if a frontend route was handled."""
         if path == "/login":
             self.send_html(LOGIN_HTML)
             return True
-
         if path == "/logout":
             token = _get_token(self)
             if token:
@@ -4288,7 +4210,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", "sj_token=; Path=/; HttpOnly; Max-Age=0")
             self.end_headers()
             return True
-
         if path in ("/", "/index.html"):
             if LOCAL_MODE:
                 self.send_html(UI)
@@ -4301,7 +4222,6 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             self.send_html(UI)
             return True
-
         return False
 
     def do_GET(self):
