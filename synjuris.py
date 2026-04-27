@@ -2084,7 +2084,7 @@ textarea{resize:vertical;min-height:72px}
 
 <div id="topbar">
   <h1>SYN<em>JURIS</em></h1>
-  <span class="topbar-tag">AI-ASSISTED &nbsp;&middot;&nbsp; YOUR DATA STAYS YOURS</span>
+  <span class="topbar-tag">Your story, organized. Your rights, defended.</span>
   <div class="sp"></div>
   <div class="api-pill" id="apill"><span class="api-dot"></span><span id="apill-t">Checking AI…</span></div>
   <span id="tier-badge" onclick="openTierSelector()" title="Click to change tier"
