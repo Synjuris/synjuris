@@ -92,17 +92,29 @@ read -r INSTALL_CHOICE
 if [[ "$INSTALL_CHOICE" =~ ^[Yy]$ ]]; then
     echo ""
     echo "  Installing Anthropic SDK (streaming)..."
-    $PYTHON -m pip install anthropic --quiet --break-system-packages 2>/dev/null || \
-    $PYTHON -m pip install anthropic --quiet 2>/dev/null && echo "  ✓  anthropic" || echo "  ⚠  anthropic install failed (optional)"
+    if $PYTHON -m pip install anthropic --quiet --break-system-packages 2>/dev/null || \
+       $PYTHON -m pip install anthropic --quiet 2>/dev/null; then
+        echo "  ✓  anthropic"
+    else
+        echo "  ⚠  anthropic install failed (optional)"
+    fi
 
     echo "  Installing sentence-transformers (semantic patterns)..."
-    $PYTHON -m pip install sentence-transformers --quiet --break-system-packages 2>/dev/null || \
-    $PYTHON -m pip install sentence-transformers --quiet 2>/dev/null && echo "  ✓  sentence-transformers" || echo "  ⚠  sentence-transformers install failed (optional)"
+    if $PYTHON -m pip install sentence-transformers --quiet --break-system-packages 2>/dev/null || \
+       $PYTHON -m pip install sentence-transformers --quiet 2>/dev/null; then
+        echo "  ✓  sentence-transformers"
+    else
+        echo "  ⚠  sentence-transformers install failed (optional)"
+    fi
 
     echo "  Installing spaCy (negation detection)..."
-    $PYTHON -m pip install spacy --quiet --break-system-packages 2>/dev/null || \
-    $PYTHON -m pip install spacy --quiet 2>/dev/null
-    $PYTHON -m spacy download en_core_web_sm --quiet 2>/dev/null && echo "  ✓  spacy en_core_web_sm" || echo "  ⚠  spacy install failed (optional)"
+    if { $PYTHON -m pip install spacy --quiet --break-system-packages 2>/dev/null || \
+         $PYTHON -m pip install spacy --quiet 2>/dev/null; } && \
+       $PYTHON -m spacy download en_core_web_sm --quiet 2>/dev/null; then
+        echo "  ✓  spacy en_core_web_sm"
+    else
+        echo "  ⚠  spacy install failed (optional)"
+    fi
 
     echo ""
     echo "  ✓  Enhancement installation complete (failures above are non-critical)"
