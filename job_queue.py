@@ -1,4 +1,4 @@
-"""
+="""
 job_queue.py — SynJuris v2 Async Generation Queue + Streaming SSE
 ==================================================================
 Replaces blocking AI API calls with an async task queue that:
@@ -631,7 +631,7 @@ Include a certificate of service. Plain English throughout."""
                 return None
 
             client  = anthropic.Anthropic(api_key=api_key)
-            model   = "claude-sonnet-4-20250514"
+            model   = "claude-sonnet-4-5-20251001"
             full_text = ""
             pct_range = end_pct - start_pct
             char_count = 0
