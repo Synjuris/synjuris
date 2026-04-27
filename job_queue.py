@@ -1,4 +1,4 @@
-="""
+"""
 job_queue.py — SynJuris v2 Async Generation Queue + Streaming SSE
 ==================================================================
 Replaces blocking AI API calls with an async task queue that:
