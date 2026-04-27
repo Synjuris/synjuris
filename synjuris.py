@@ -829,25 +829,6 @@ LOGIN_HTML = """<!DOCTYPE html>
        padding:10px 14px;font-size:13px;color:#f08080;margin-bottom:14px;display:none}
   .notice{background:#0f1e2a;border:1px solid #1e3248;border-radius:6px;
           padding:10px 14px;font-size:12px;color:#6b7a8d;margin-bottom:16px}
-
-/* ── Mobile responsive (injected) ─────────────────────────────────────── */
-#mob-menu-btn{display:none;background:none;border:none;cursor:pointer;padding:6px 8px;color:var(--gold);font-size:20px;line-height:1;margin-right:4px}
-@media(max-width:680px){
-  #mob-menu-btn{display:block}
-  #app{grid-template-columns:1fr;grid-template-rows:50px 1fr}
-  #sidebar{
-    position:fixed;top:50px;left:0;bottom:0;width:260px;
-    transform:translateX(-100%);transition:transform .22s ease;
-    z-index:100;border-right:1px solid var(--gold-bd)
-  }
-  #sidebar.mob-open{transform:translateX(0)}
-  #mob-overlay{display:none;position:fixed;inset:0;top:50px;background:rgba(0,0,0,.55);z-index:99}
-  #mob-overlay.mob-open{display:block}
-  #main{grid-column:1;overflow-y:auto}
-  .topbar-tag{display:none}
-  #topbar h1{font-size:15px}
-  #apill{font-size:10px}
-}
 </style>
 </head>
 <body>
@@ -2125,6 +2106,25 @@ textarea{resize:vertical;min-height:72px}
   .st{font-size:9pt;border-bottom:1px solid #ccc;padding-bottom:3px;margin-bottom:8px}
   .badge{border:1px solid #999!important;background:none!important;color:#000!important}
   a[href]:after{content:" (" attr(href) ")"}
+}
+
+/* ── Mobile responsive (injected) ─────────────────────────────────────── */
+#mob-menu-btn{display:none;background:none;border:none;cursor:pointer;padding:6px 8px;color:var(--gold);font-size:20px;line-height:1;margin-right:4px}
+@media(max-width:680px){
+  #mob-menu-btn{display:block}
+  #app{grid-template-columns:1fr;grid-template-rows:50px 1fr}
+  #sidebar{
+    position:fixed;top:50px;left:0;bottom:0;width:260px;
+    transform:translateX(-100%);transition:transform .22s ease;
+    z-index:100;border-right:1px solid var(--gold-bd)
+  }
+  #sidebar.mob-open{transform:translateX(0)}
+  #mob-overlay{display:none;position:fixed;inset:0;top:50px;background:rgba(0,0,0,.55);z-index:99}
+  #mob-overlay.mob-open{display:block}
+  #main{grid-column:1;overflow-y:auto}
+  .topbar-tag{display:none}
+  #topbar h1{font-size:15px}
+  #apill{font-size:10px}
 }
 </style>
 </head>
@@ -4206,6 +4206,30 @@ function copyText(id){
 }
 
 init();
+
+// ── Mobile sidebar toggle (injected) ────────────────────────────────────────
+(function(){
+  const overlay = document.createElement('div');
+  overlay.id = 'mob-overlay';
+  document.getElementById('app').appendChild(overlay);
+
+  function closeSidebar(){
+    document.getElementById('sidebar').classList.remove('mob-open');
+    overlay.classList.remove('mob-open');
+  }
+  function toggleSidebar(){
+    const sb = document.getElementById('sidebar');
+    const open = sb.classList.toggle('mob-open');
+    overlay.classList.toggle('mob-open', open);
+  }
+
+  const btn = document.getElementById('mob-menu-btn');
+  if(btn) btn.addEventListener('click', toggleSidebar);
+  overlay.addEventListener('click', closeSidebar);
+  document.getElementById('case-list').addEventListener('click', function(){
+    if(window.innerWidth <= 680) closeSidebar();
+  });
+})();
 </script>
 </body>
 </html>"""
