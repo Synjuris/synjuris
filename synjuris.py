@@ -439,6 +439,94 @@ def _keyword_relevance(query: str, text: str) -> int:
     return len(q_words & t_words)
 
 
+
+# ── Constitutional Rights Reference ───────────────────────────────────────────
+CONSTITUTIONAL_RIGHTS = {
+    "Gatekeeping": [
+        {"amendment": "14th Amendment — Due Process", "plain": "Parents have a fundamental constitutional right to custody and care of their children. Interference with court-ordered parenting time may constitute a due process violation.", "case_law": "Troxel v. Granville, 530 U.S. 57 (2000)"},
+        {"amendment": "1st Amendment — Freedom of Association", "plain": "The parent-child bond is a protected associational right that cannot be severed without compelling justification.", "case_law": "Prince v. Massachusetts, 321 U.S. 158 (1944)"},
+    ],
+    "Parental Alienation": [
+        {"amendment": "14th Amendment — Due Process & Equal Protection", "plain": "Systematic alienation of a child from a parent infringes the fundamental liberty interest in family integrity.", "case_law": "Troxel v. Granville, 530 U.S. 57 (2000)"},
+    ],
+    "Threats": [
+        {"amendment": "1st Amendment — True Threats Doctrine", "plain": "The First Amendment does not protect true threats — serious expressions of intent to commit unlawful violence. Threats to take children or cause harm fall outside First Amendment protection.", "case_law": "Virginia v. Black, 538 U.S. 343 (2003)"},
+        {"amendment": "14th Amendment — Equal Protection", "plain": "Threats made on the basis of gender or other protected class in a domestic context implicate equal protection principles.", "case_law": "United States v. Morrison, 529 U.S. 598 (2000)"},
+    ],
+    "Harassment": [
+        {"amendment": "4th Amendment — Right to Privacy", "plain": "Repeated unwanted contact, surveillance, and intrusion into your home or workplace may violate your constitutional privacy rights.", "case_law": "Carpenter v. United States, 585 U.S. 296 (2018)"},
+    ],
+    "Privacy Violation": [
+        {"amendment": "4th Amendment — Search and Seizure", "plain": "Accessing your phone, email, or accounts without consent; installing tracking software; or recording you without permission violates constitutional privacy rights and federal wiretapping statutes (18 U.S.C. § 2511).", "case_law": "Katz v. United States, 389 U.S. 347 (1967)"},
+    ],
+    "Violation of Order": [
+        {"amendment": "14th Amendment — Due Process", "plain": "Your right to enforcement of a valid court order is a due process right. Willful violation exposes the violating party to contempt sanctions.", "case_law": "United States v. United Mine Workers, 330 U.S. 258 (1947)"},
+    ],
+    "Financial Abuse": [
+        {"amendment": "14th Amendment — Property Rights", "plain": "Marital property and support obligations are property rights protected by due process. Hiding assets or refusing court-ordered support may constitute a deprivation of constitutionally protected property.", "case_law": "Boddie v. Connecticut, 401 U.S. 371 (1971)"},
+    ],
+    "Physical Abuse": [
+        {"amendment": "14th Amendment — Substantive Due Process", "plain": "You have a fundamental liberty interest in your own bodily integrity. Physical abuse is a direct constitutional violation.", "case_law": "Washington v. Glucksberg, 521 U.S. 702 (1997)"},
+        {"amendment": "4th Amendment — Seizure of Person", "plain": "Physical assault constitutes an unlawful seizure of your person under 4th Amendment principles.", "case_law": "Tennessee v. Garner, 471 U.S. 1 (1985)"},
+    ],
+    "Coercive Control": [
+        {"amendment": "13th Amendment — Involuntary Servitude", "plain": "In extreme cases, using force or psychological manipulation to dominate another person’s daily life has been argued to implicate the 13th Amendment’s prohibition on involuntary servitude.", "case_law": "United States v. Kozminski, 487 U.S. 931 (1988)"},
+        {"amendment": "14th Amendment — Liberty Interest", "plain": "Freedom of movement, freedom to work, and freedom to associate are liberty interests the 14th Amendment protects.", "case_law": "Obergefell v. Hodges, 576 U.S. 644 (2015)"},
+    ],
+    "Relocation": [
+        {"amendment": "14th Amendment — Due Process", "plain": "Relocating children out of state without court approval violates the non-relocating parent’s due process rights and may constitute custodial interference under state law.", "case_law": "Troxel v. Granville, 530 U.S. 57 (2000)"},
+        {"amendment": "Full Faith and Credit Clause — Article IV", "plain": "Custody orders issued in one state must be honored by all other states. A parent who flees to evade a custody order cannot relitigate custody elsewhere.", "case_law": "Parental Kidnapping Prevention Act, 28 U.S.C. § 1738A"},
+    ],
+    "False Allegations": [
+        {"amendment": "14th Amendment — Due Process & Liberty", "plain": "False allegations in judicial proceedings that result in loss of custody or liberty implicate your 14th Amendment due process rights. You have the right to confront evidence against you.", "case_law": "Mathews v. Eldridge, 424 U.S. 319 (1976)"},
+        {"amendment": "6th Amendment — Right to Confront", "plain": "In any criminal proceeding arising from false allegations, you have the constitutional right to confront your accuser and cross-examine witnesses.", "case_law": "Crawford v. Washington, 541 U.S. 36 (2004)"},
+    ],
+    "Documentation / Evidence Tampering": [
+        {"amendment": "5th Amendment — Due Process", "plain": "Tampering with evidence or committing perjury violates your right to a fair proceeding. Courts may impose sanctions or contempt findings against a party who destroys evidence.", "case_law": "Spoliation doctrine; 18 U.S.C. § 1519"},
+    ],
+    "Child Statement": [
+        {"amendment": "6th Amendment — Confrontation Clause", "plain": "Statements made by children used in legal proceedings may implicate the Confrontation Clause. Courts apply special rules to child testimony in custody and abuse proceedings.", "case_law": "Maryland v. Craig, 497 U.S. 836 (1990)"},
+    ],
+    "Emotional Abuse": [
+        {"amendment": "14th Amendment — Substantive Due Process", "plain": "Psychological harm inflicted on a parent or child implicates substantive due process protections of personal dignity and family integrity.", "case_law": "Troxel v. Granville, 530 U.S. 57 (2000)"},
+    ],
+    "_case_type": {
+        "custody":          ["14th Amend. — Due Process (parental rights)", "1st Amend. — Freedom of Association", "Full Faith & Credit — Art. IV"],
+        "divorce":          ["14th Amend. — Property Rights", "14th Amend. — Equal Protection", "5th Amend. — Self-Incrimination"],
+        "domestic_violence":["14th Amend. — Bodily Integrity", "4th Amend. — Privacy", "13th Amend. — Involuntary Servitude", "1st Amend. — True Threats"],
+        "civil_rights":     ["1st Amend.", "4th Amend.", "5th Amend.", "14th Amend."],
+    },
+}
+
+US_CONSTITUTION_AMENDMENTS = {
+    1:  "Congress shall make no law respecting an establishment of religion, or prohibiting the free exercise thereof; or abridging the freedom of speech, or of the press; or the right of the people peaceably to assemble, and to petition the Government for a redress of grievances.",
+    4:  "The right of the people to be secure in their persons, houses, papers, and effects, against unreasonable searches and seizures, shall not be violated, and no Warrants shall issue, but upon probable cause, supported by Oath or affirmation, and particularly describing the place to be searched, and the persons or things to be seized.",
+    5:  "No person shall be held to answer for a capital, or otherwise infamous crime, unless on a presentment or indictment of a Grand Jury, except in cases arising in the land or naval forces, or in the Militia, when in actual service in time of War or public danger; nor shall any person be subject for the same offence to be twice put in jeopardy of life or limb; nor shall be compelled in any criminal case to be a witness against himself, nor be deprived of life, liberty, or property, without due process of law; nor shall private property be taken for public use, without just compensation.",
+    6:  "In all criminal prosecutions, the accused shall enjoy the right to a speedy and public trial, by an impartial jury of the State and district wherein the crime shall have been committed; to be informed of the nature and cause of the accusation; to be confronted with the witnesses against him; to have compulsory process for obtaining witnesses in his favor, and to have the Assistance of Counsel for his defence.",
+    13: "Neither slavery nor involuntary servitude, except as a punishment for crime whereof the party shall have been duly convicted, shall exist within the United States, or any place subject to their jurisdiction.",
+    14: "All persons born or naturalized in the United States, and subject to the jurisdiction thereof, are citizens of the United States and of the State wherein they reside. No State shall make or enforce any law which shall abridge the privileges or immunities of citizens of the United States; nor shall any State deprive any person of life, liberty, or property, without due process of law; nor deny to any person within its jurisdiction the equal protection of the laws.",
+}
+
+def get_constitutional_context(confirmed_categories, case_type=""):
+    seen = set()
+    blocks = []
+    for cat in confirmed_categories:
+        for right in CONSTITUTIONAL_RIGHTS.get(cat, []):
+            key = right["amendment"]
+            if key not in seen:
+                seen.add(key)
+                blocks.append(f"  {right['amendment']}\n  {right['plain']}\n  Key case: {right.get('case_law','N/A')}")
+    ct_key = (case_type or "").lower().replace(" ","_").replace("-","_")
+    for label in CONSTITUTIONAL_RIGHTS.get("_case_type", {}).get(ct_key, []):
+        if label not in seen:
+            seen.add(label)
+            blocks.append(f"  {label}")
+    if not blocks:
+        return ""
+    return "CONSTITUTIONAL RIGHTS IMPLICATED\n" + "\n\n".join(blocks)
+
+
+
 def build_case_system(case_id, user_query=""):
     conn = get_db()
     case    = conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
@@ -530,7 +618,14 @@ YOUR RULES:
 5. When asked to draft a document, produce a complete draft with [BRACKET PLACEHOLDERS].
 6. Never invent statutes or case law. If unsure of a statute number, say so.
 7. When discussing hearing prep, be specific: what to say, what NOT to say.
-8. If someone describes domestic violence, always provide safety resources first."""
+8. If someone describes domestic violence, always provide safety resources first.
+
+CONSTITUTIONAL GROUNDING: When relevant, cite specific constitutional amendments. Ground every legal argument in constitutional principles where applicable. Explain rights in plain language."""
+
+    confirmed_cats = list({(e['category'] if hasattr(e,'__getitem__') else e[2]) for e in evidence if (e['category'] if hasattr(e,'__getitem__') else e[2])})
+    constitutional_block = get_constitutional_context(confirmed_cats, c.get('case_type',''))
+    if constitutional_block:
+        system += "\n\n" + constitutional_block
 
     snapshot = compute_case_state(case_id)
     st = snapshot["state"]
@@ -2078,18 +2173,13 @@ textarea{resize:vertical;min-height:72px}
   a[href]:after{content:" (" attr(href) ")"}
 }
 
-/* hamburger — hidden on desktop */
 #mob-btn{display:none;background:none;border:none;color:var(--gold);font-size:22px;cursor:pointer;padding:0 10px 0 0;line-height:1;flex-shrink:0}
-
-/* desktop: restore sidebar as fixed column */
 @media(min-width:681px){
   #app{grid-template-columns:220px 1fr!important}
   #sidebar{position:static!important;transform:none!important;width:auto!important;z-index:auto!important}
   #mob-btn{display:none!important}
   #mob-overlay{display:none!important}
 }
-
-/* mobile open state */
 #sidebar.mob-open{transform:translateX(0)!important}
 #mob-overlay{display:none;position:fixed;top:50px;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:99}
 #mob-overlay.mob-open{display:block}
@@ -2100,7 +2190,7 @@ textarea{resize:vertical;min-height:72px}
 
 <div id="topbar">
   <button id="mob-btn" onclick="toggleSidebar()" aria-label="Menu">&#9776;</button><h1>SYN<em>JURIS</em></h1>
-  <span class="topbar-tag">Your story, organized. Your rights, defended.</span>
+  <span class="topbar-tag">AI-ASSISTED &nbsp;&middot;&nbsp; YOUR DATA STAYS YOURS</span>
   <div class="sp"></div>
   <div class="api-pill" id="apill"><span class="api-dot"></span><span id="apill-t">Checking AI…</span></div>
   <span id="tier-badge" onclick="openTierSelector()" title="Click to change tier"
@@ -2115,8 +2205,9 @@ textarea{resize:vertical;min-height:72px}
 
 <div id="main">
   <div id="welcome">
-    <h2 style="font-family:var(--serif);font-size:48px;color:var(--gold);letter-spacing:.1em;margin-bottom:10px">SYNJURIS</h2>
-    <div style="font-size:12px;letter-spacing:.18em;color:var(--ink3);text-transform:uppercase;margin-bottom:24px">LOCAL-FIRST &nbsp;&middot;&nbsp; AI-ASSISTED &nbsp;&middot;&nbsp; DATA SECURITY</div>
+    <h2 style="font-family:var(--serif);font-size:48px;color:var(--gold);letter-spacing:.1em;margin-bottom:6px">SYNJURIS</h2>
+    <div style="font-family:var(--serif);font-size:22px;color:var(--ink);letter-spacing:.02em;margin-bottom:16px;line-height:1.4">Your story, organized.<br>Your rights, defended.</div>
+    <div style="font-size:11px;letter-spacing:.18em;color:var(--ink3);text-transform:uppercase;margin-bottom:24px">LOCAL-FIRST &nbsp;&middot;&nbsp; AI-ASSISTED &nbsp;&middot;&nbsp; DATA SECURITY</div>
     <p style="color:var(--ink2);max-width:480px;font-size:16px;line-height:1.9;margin-bottom:20px">Built for pro se litigants. Organize evidence, understand your rights, draft documents, and prepare for court — all running locally. Your data never leaves this computer.</p>
     <div style="max-width:480px;padding:14px 18px;background:rgba(201,168,76,.08);border:1px solid rgba(201,168,76,.25);border-radius:8px;margin-bottom:28px">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--gold);margin-bottom:6px">⚖ Work-Product Protection</div>
@@ -4173,7 +4264,31 @@ function copyText(id){
 
 init();
 
-// Mobile sidebar
+// ── Constitutional rights map ─────────────────────────────────────────────────
+const CONST_RIGHTS = {
+  "Gatekeeping":["14th Amend. — Due Process","1st Amend. — Freedom of Association"],
+  "Parental Alienation":["14th Amend. — Due Process & Equal Protection"],
+  "Threats":["1st Amend. — True Threats","14th Amend. — Equal Protection"],
+  "Harassment":["4th Amend. — Privacy"],
+  "Privacy Violation":["4th Amend. — Search & Seizure"],
+  "Violation of Order":["14th Amend. — Due Process"],
+  "Financial Abuse":["14th Amend. — Property Rights"],
+  "Physical Abuse":["14th Amend. — Bodily Integrity","4th Amend. — Seizure of Person"],
+  "Coercive Control":["13th Amend. — Involuntary Servitude","14th Amend. — Liberty"],
+  "Relocation":["14th Amend. — Due Process","Full Faith & Credit — Art. IV"],
+  "False Allegations":["14th Amend. — Due Process","6th Amend. — Right to Confront"],
+  "Documentation / Evidence Tampering":["5th Amend. — Due Process"],
+  "Child Statement":["6th Amend. — Confrontation Clause"],
+  "Emotional Abuse":["14th Amend. — Substantive Due Process"],
+  "Neglect / Safety":["14th Amend. — Due Process (child welfare)"],
+  "Substance Concern":["14th Amend. — Due Process (child welfare)"],
+};
+function rightsTag(cat){
+  var r=CONST_RIGHTS[cat]||[];
+  if(!r.length) return '';
+  return '<div style="font-size:10px;color:#c9a84c;margin-top:3px;opacity:.9">⚖ '+r.join(' &middot; ')+'</div>';
+}
+
 function toggleSidebar(){
   var sb=document.getElementById('sidebar');
   var ov=document.getElementById('mob-overlay');
@@ -4181,28 +4296,16 @@ function toggleSidebar(){
   ov.classList.toggle('mob-open');
 }
 (function(){
-  var ov=document.createElement('div');
-  ov.id='mob-overlay';
+  var ov=document.createElement('div');ov.id='mob-overlay';
   ov.onclick=function(){
     document.getElementById('sidebar').classList.remove('mob-open');
     ov.classList.remove('mob-open');
   };
   document.getElementById('app').appendChild(ov);
-  // Show hamburger only on mobile
-  function checkMob(){
-    var btn=document.getElementById('mob-btn');
-    if(btn) btn.style.display=window.innerWidth<=680?'block':'none';
-  }
-  checkMob();
-  window.addEventListener('resize',checkMob);
-  // Close sidebar on case select (mobile)
+  function checkMob(){var btn=document.getElementById('mob-btn');if(btn)btn.style.display=window.innerWidth<=680?'block':'none';}
+  checkMob();window.addEventListener('resize',checkMob);
   var cl=document.getElementById('case-list');
-  if(cl) cl.addEventListener('click',function(){
-    if(window.innerWidth<=680){
-      document.getElementById('sidebar').classList.remove('mob-open');
-      document.getElementById('mob-overlay').classList.remove('mob-open');
-    }
-  });
+  if(cl)cl.addEventListener('click',function(){if(window.innerWidth<=680){document.getElementById('sidebar').classList.remove('mob-open');document.getElementById('mob-overlay').classList.remove('mob-open');}});
 })();
 </script>
 </body>
@@ -4245,8 +4348,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_frontend(self, path):
         if path == "/login":
-            self.send_html(LOGIN_HTML)
-            return True
+            self.send_html(LOGIN_HTML); return True
         if path == "/logout":
             token = _get_token(self)
             if token:
@@ -4256,20 +4358,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", "/login")
             self.send_header("Set-Cookie", "sj_token=; Path=/; HttpOnly; Max-Age=0")
-            self.end_headers()
-            return True
+            self.end_headers(); return True
         if path in ("/", "/index.html"):
             if LOCAL_MODE:
-                self.send_html(UI)
-                return True
+                self.send_html(UI); return True
             uid = get_user_from_token(_get_token(self))
             if not uid:
                 self.send_response(302)
                 self.send_header("Location", "/login")
-                self.end_headers()
-                return True
-            self.send_html(UI)
-            return True
+                self.end_headers(); return True
+            self.send_html(UI); return True
         return False
 
     def do_GET(self):
