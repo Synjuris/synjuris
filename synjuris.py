@@ -1884,7 +1884,7 @@ UI = r"""<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.7}
 
-#app{display:grid;grid-template-columns:220px 1fr;grid-template-rows:50px 1fr;height:100vh}
+#app{display:grid;grid-template-columns:1fr;grid-template-rows:50px 1fr;height:100vh}
 
 /* topbar */
 #topbar{grid-column:1/-1;display:flex;align-items:center;padding:0 20px;background:var(--surface2);border-bottom:1px solid var(--gold-bd);gap:12px;z-index:10}
@@ -1897,7 +1897,7 @@ html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--sa
 .api-pill.on .api-dot{background:var(--green)}
 
 /* sidebar */
-#sidebar{background:var(--surface2);border-right:1px solid var(--gold-bd);display:flex;flex-direction:column;overflow:hidden}
+#sidebar{background:var(--surface2);border-right:1px solid var(--gold-bd);display:flex;flex-direction:column;overflow:hidden;position:fixed;top:50px;left:0;bottom:0;width:260px;transform:translateX(-100%);transition:transform .25s ease;z-index:100}
 #sb-head{padding:14px 14px 10px;border-bottom:1px solid var(--border2)}
 #sb-head p{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);margin-bottom:8px}
 #new-btn{width:100%;background:transparent;color:var(--gold);border:1px solid var(--gold-bd);border-radius:var(--r);padding:8px 10px;font-family:var(--sans);font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s}
@@ -2077,13 +2077,29 @@ textarea{resize:vertical;min-height:72px}
   .badge{border:1px solid #999!important;background:none!important;color:#000!important}
   a[href]:after{content:" (" attr(href) ")"}
 }
+
+/* hamburger — hidden on desktop */
+#mob-btn{display:none;background:none;border:none;color:var(--gold);font-size:22px;cursor:pointer;padding:0 10px 0 0;line-height:1;flex-shrink:0}
+
+/* desktop: restore sidebar as fixed column */
+@media(min-width:681px){
+  #app{grid-template-columns:220px 1fr!important}
+  #sidebar{position:static!important;transform:none!important;width:auto!important;z-index:auto!important}
+  #mob-btn{display:none!important}
+  #mob-overlay{display:none!important}
+}
+
+/* mobile open state */
+#sidebar.mob-open{transform:translateX(0)!important}
+#mob-overlay{display:none;position:fixed;top:50px;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:99}
+#mob-overlay.mob-open{display:block}
 </style>
 </head>
 <body>
 <div id="app">
 
 <div id="topbar">
-  <h1>SYN<em>JURIS</em></h1>
+  <button id="mob-btn" onclick="toggleSidebar()" aria-label="Menu">&#9776;</button><h1>SYN<em>JURIS</em></h1>
   <span class="topbar-tag">Your story, organized. Your rights, defended.</span>
   <div class="sp"></div>
   <div class="api-pill" id="apill"><span class="api-dot"></span><span id="apill-t">Checking AI…</span></div>
@@ -4156,6 +4172,38 @@ function copyText(id){
 }
 
 init();
+
+// Mobile sidebar
+function toggleSidebar(){
+  var sb=document.getElementById('sidebar');
+  var ov=document.getElementById('mob-overlay');
+  sb.classList.toggle('mob-open');
+  ov.classList.toggle('mob-open');
+}
+(function(){
+  var ov=document.createElement('div');
+  ov.id='mob-overlay';
+  ov.onclick=function(){
+    document.getElementById('sidebar').classList.remove('mob-open');
+    ov.classList.remove('mob-open');
+  };
+  document.getElementById('app').appendChild(ov);
+  // Show hamburger only on mobile
+  function checkMob(){
+    var btn=document.getElementById('mob-btn');
+    if(btn) btn.style.display=window.innerWidth<=680?'block':'none';
+  }
+  checkMob();
+  window.addEventListener('resize',checkMob);
+  // Close sidebar on case select (mobile)
+  var cl=document.getElementById('case-list');
+  if(cl) cl.addEventListener('click',function(){
+    if(window.innerWidth<=680){
+      document.getElementById('sidebar').classList.remove('mob-open');
+      document.getElementById('mob-overlay').classList.remove('mob-open');
+    }
+  });
+})();
 </script>
 </body>
 </html>"""
