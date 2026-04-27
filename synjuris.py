@@ -2240,19 +2240,19 @@ textarea{resize:vertical;min-height:72px}
       <div id="dl-links" style="display:none;margin-top:4px">
         <div style="font-size:12px;color:var(--ink2);margin-bottom:10px">&#10003; Got it — choose your platform:</div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <a href="https://github.com/synjuris/synjuris/releases/latest/download/launch_synjuris_windows.bat"
+          <a href="https://raw.githubusercontent.com/Synjuris/synjuris/main/launch_synjuris_v2_windows.bat"
              style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
-            &#x229E; Windows (.bat)
+            &#x229E; Windows
           </a>
-          <a href="https://github.com/synjuris/synjuris/releases/latest/download/launch_synjuris_mac.command"
+          <a href="https://raw.githubusercontent.com/Synjuris/synjuris/main/launch_synjuris_v2_mac_command.txt"
              style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
-            &#xF8FF; Mac (.command)
+            &#xF8FF; Mac
           </a>
-          <a href="https://github.com/synjuris/synjuris/releases/latest/download/synjuris-10.py"
+          <a href="https://raw.githubusercontent.com/Synjuris/synjuris/main/synjuris-10.py"
              style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
-            &#x1F40D; Python (.py)
+            &#x1F40D; Python
           </a>
-          <a href="https://github.com/synjuris/synjuris/releases/latest"
+          <a href="https://github.com/Synjuris/synjuris"
              style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:transparent;border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink3);text-decoration:none">
             GitHub &#8599;
           </a>
