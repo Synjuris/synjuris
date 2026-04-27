@@ -808,6 +808,12 @@ def init_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         completed_at DATETIME
     );
+    CREATE TABLE IF NOT EXISTS waitlist (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL UNIQUE,
+        platform TEXT DEFAULT 'desktop',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
     """)
     conn.commit()
     conn.close()
@@ -2214,7 +2220,51 @@ textarea{resize:vertical;min-height:72px}
       <p style="font-size:13px;color:var(--ink2);line-height:1.7">Communications with cloud AI tools have been ruled non-privileged in federal proceedings because they involve third-party transmission. SynJuris runs entirely on your machine — no third party ever receives your case data — which means your strategy may retain work-product status that cloud tools cannot provide.</p>
     </div>
     <button class="btn btn-p" onclick="openNewCase()" style="padding:14px 36px;font-size:15px;letter-spacing:.04em">Start a New Case</button>
-    <div style="margin-top:40px;font-size:14px;color:var(--ink3)">&#9670;</div>
+
+    <div style="margin-top:48px;padding:22px 24px;background:rgba(201,168,76,.07);border:1px solid rgba(201,168,76,.2);border-radius:10px;max-width:480px;text-align:left">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--gold);margin-bottom:8px">&#8681; Free Desktop Version</div>
+      <p style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:16px">
+        While we finalize the cloud version, download SynJuris and run it privately on your own computer —
+        <strong style="color:var(--ink)">completely free.</strong>
+        Enter your email below — we'll notify you when the cloud version launches.
+        Then pick your platform: double-click the launcher and you're running in seconds.
+      </p>
+      <div id="dl-form" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <input id="dl-email" type="email" placeholder="your@email.com"
+          style="flex:1;min-width:180px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:9px 12px;font-size:13px;color:var(--ink);outline:none">
+        <button onclick="submitDownload()" id="dl-btn"
+          style="padding:9px 18px;background:var(--gold);color:#0d1b2a;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
+          Get Free Download
+        </button>
+      </div>
+      <div id="dl-links" style="display:none;margin-top:4px">
+        <div style="font-size:12px;color:var(--ink2);margin-bottom:10px">&#10003; Got it — choose your platform:</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <a href="https://github.com/synjuris/synjuris/releases/latest/download/launch_synjuris_windows.bat"
+             style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
+            &#x229E; Windows (.bat)
+          </a>
+          <a href="https://github.com/synjuris/synjuris/releases/latest/download/launch_synjuris_mac.command"
+             style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
+            &#xF8FF; Mac (.command)
+          </a>
+          <a href="https://github.com/synjuris/synjuris/releases/latest/download/synjuris-10.py"
+             style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
+            &#x1F40D; Python (.py)
+          </a>
+          <a href="https://github.com/synjuris/synjuris/releases/latest"
+             style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:transparent;border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink3);text-decoration:none">
+            GitHub &#8599;
+          </a>
+        </div>
+      </div>
+      <div id="dl-err" style="display:none;font-size:12px;color:#e05c5c;margin-top:6px"></div>
+      <div style="font-size:11px;color:var(--ink3);margin-top:10px">
+        Requires Python 3.9+ &nbsp;&middot;&nbsp; Windows &amp; Mac &nbsp;&middot;&nbsp; No spam, ever.
+      </div>
+    </div>
+
+    <div style="margin-top:32px;font-size:14px;color:var(--ink3)">&#9670;</div>
   </div>
   <div id="cv" style="display:none">
     <div id="cv-head">
@@ -4307,6 +4357,28 @@ function toggleSidebar(){
   var cl=document.getElementById('case-list');
   if(cl)cl.addEventListener('click',function(){if(window.innerWidth<=680){document.getElementById('sidebar').classList.remove('mob-open');document.getElementById('mob-overlay').classList.remove('mob-open');}});
 })();
+
+// ── Download email capture ────────────────────────────────────────────────────
+async function submitDownload(){
+  const email = document.getElementById('dl-email').value.trim();
+  const btn   = document.getElementById('dl-btn');
+  const err   = document.getElementById('dl-err');
+  err.style.display = 'none';
+  if(!email || !email.includes('@')){
+    err.textContent = 'Please enter a valid email address.';
+    err.style.display = 'block'; return;
+  }
+  btn.textContent = 'Sending…'; btn.disabled = true;
+  try {
+    await api('/api/waitlist', {email, platform: 'desktop'});
+    document.getElementById('dl-form').style.display = 'none';
+    document.getElementById('dl-links').style.display = 'block';
+  } catch(e) {
+    err.textContent = 'Something went wrong. Try again.';
+    err.style.display = 'block';
+    btn.textContent = 'Get Free Download'; btn.disabled = false;
+  }
+}
 </script>
 </body>
 </html>"""
@@ -4500,13 +4572,57 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
             self.send_json({"statement": stmt}); return
 
+        # ── Waitlist export (admin only — protect in production) ──────────────
+        if path == "/api/waitlist/export":
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT email, platform, created_at FROM waitlist ORDER BY created_at DESC"
+            ).fetchall()
+            conn.close()
+            lines = ["email,platform,signed_up"] + [
+                f"{r['email'] if hasattr(r,'__getitem__') else r[0]},"
+                f"{r['platform'] if hasattr(r,'__getitem__') else r[1]},"
+                f"{r['created_at'] if hasattr(r,'__getitem__') else r[2]}"
+                for r in rows
+            ]
+            csv_bytes = "\n".join(lines).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv")
+            self.send_header("Content-Disposition", "attachment; filename=synjuris_waitlist.csv")
+            self.send_header("Content-Length", len(csv_bytes))
+            self.end_headers()
+            self.wfile.write(csv_bytes)
+            return
+
         self.send_json({"error": "not found"}, 404)
 
     def do_POST(self):
         path = urlparse(self.path).path
         b    = self.body()
 
-        # ── V2: Evidence confirmation — adds to Merkle DAG ──────────────────
+        # ── Waitlist / download email capture ──────────────────────────────────
+        if path == "/api/waitlist":
+            email = (b.get("email") or "").strip().lower()
+            platform = (b.get("platform") or "desktop").strip()[:20]
+            if not email or "@" not in email:
+                self.send_json({"error": "Valid email required"}, 400); return
+            conn = get_db()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO waitlist (email, platform) VALUES (?,?)",
+                    (email, platform)
+                )
+                conn.commit()
+            except Exception:
+                pass
+            conn.close()
+            self.send_json({"ok": True}); return
+
+        # ── Waitlist admin (view emails) ────────────────────────────────────────
+        if path == "/api/waitlist" and False:  # GET handled below
+            pass
+
+                # ── V2: Evidence confirmation — adds to Merkle DAG ──────────────────
         if path == "/api/evidence/confirm":
             uid = require_auth(self)
             if not uid: return
