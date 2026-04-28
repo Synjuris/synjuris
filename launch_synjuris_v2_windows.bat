@@ -1,14 +1,15 @@
 @echo off
 REM ═══════════════════════════════════════════════════════════════════════════
 REM  SynJuris v2 — Windows Launcher
+REM  Double-click to start. Click "More info" then "Run anyway" if Defender prompts.
 REM ═══════════════════════════════════════════════════════════════════════════
 
 cd /d "%~dp0"
 cls
 echo.
 echo   ╔════════════════════════════════════════════════════════╗
-echo   ║         SynJuris v2 — Advanced Architecture           ║
-echo   ║    Merkle DAG · Semantic AI · Streaming · Local       ║
+echo   ║         SynJuris v2 — Legal Intelligence               ║
+echo   ║   Local-First · AI-Assisted · Your Data Stays Yours    ║
 echo   ╚════════════════════════════════════════════════════════╝
 echo.
 
@@ -17,7 +18,10 @@ python --version >nul 2>&1
 if %errorlevel% neq 0 (
     py --version >nul 2>&1
     if %errorlevel% neq 0 (
-        echo   ✗  Python not found. Install from python.org
+        echo   ✗  Python not found.
+        echo      Download from: https://www.python.org/downloads/
+        echo      Make sure to check "Add Python to PATH" during install.
+        echo.
         pause
         exit /b 1
     ) else (
@@ -30,32 +34,34 @@ if %errorlevel% neq 0 (
 for /f "tokens=2" %%i in ('%PYTHON% --version 2^>^&1') do set PYVER=%%i
 echo   ✓  Python %PYVER%
 
-REM ── Check script ─────────────────────────────────────────────────────────────
-if exist "synjuris-20.py" (
-    set SCRIPT=synjuris-20.py
-    echo   ✓  synjuris-20.py found
-) else if exist "synjuris-10.py" (
-    set SCRIPT=synjuris-10.py
-    echo   ⚠  synjuris-20.py not found, using synjuris-10.py
-) else (
-    echo   ✗  No SynJuris script found.
+REM ── Check synjuris.py ────────────────────────────────────────────────────────
+if not exist "synjuris.py" (
+    echo   ✗  synjuris.py not found in this folder.
+    echo      Make sure this launcher is in the same folder as synjuris.py
+    echo.
     pause
     exit /b 1
 )
+echo   ✓  synjuris.py found
 
 REM ── API key ──────────────────────────────────────────────────────────────────
 if "%ANTHROPIC_API_KEY%"=="" (
     echo.
     echo   ─────────────────────────────────────────────────────────
-    echo   AI features require an Anthropic API key.
-    echo   Get one at: https://console.anthropic.com
+    echo   AI features require an API key.
+    echo.
+    echo   Anthropic (default): https://console.anthropic.com
+    echo   OpenAI:              https://platform.openai.com/api-keys
+    echo   Ollama (local/free): https://ollama.com — no key needed
+    echo.
+    echo   Paste your Anthropic or OpenAI key, or press Enter to skip.
     echo   ─────────────────────────────────────────────────────────
     set /p USER_KEY="  API key (or Enter to skip): "
     if not "%USER_KEY%"=="" (
         set ANTHROPIC_API_KEY=%USER_KEY%
-        echo   ✓  API key set.
+        echo   ✓  API key set for this session.
     ) else (
-        echo   Continuing without API key.
+        echo   Continuing without API key — AI features disabled until configured.
     )
 ) else (
     echo   ✓  API key: set
@@ -64,28 +70,35 @@ if "%ANTHROPIC_API_KEY%"=="" (
 REM ── Optional enhancements ─────────────────────────────────────────────────
 echo.
 echo   ─────────────────────────────────────────────────────────
-echo   Install optional v2 enhancements? (streaming, semantic AI)
-echo   This will run: pip install anthropic sentence-transformers
-echo   ─────────────────────────────────────────────────────────
-set /p INSTALL_CHOICE="  Install? [y/N]: "
+echo   Optional enhancements (non-critical — app works without them):
+echo.
+echo     True streaming AI responses  -^> pip install anthropic
+echo     Semantic pattern detection   -^> pip install sentence-transformers
+echo.
+set /p INSTALL_CHOICE="  Install optional enhancements? [y/N]: "
 
 if /i "%INSTALL_CHOICE%"=="y" (
-    echo   Installing Anthropic SDK...
+    echo.
+    echo   Installing...
     %PYTHON% -m pip install anthropic --quiet
-    echo   Installing sentence-transformers...
+    echo   ✓  anthropic SDK
     %PYTHON% -m pip install sentence-transformers --quiet
-    echo   ✓  Done. Failures above are non-critical.
+    echo   ✓  sentence-transformers
+    echo.
+    echo   ✓  Done. Any failures above are non-critical.
+) else (
+    echo   Skipping — SynJuris works fully without these.
 )
 
 REM ── Launch ────────────────────────────────────────────────────────────────
 echo.
 echo   ════════════════════════════════════════════════════════
 echo   Starting SynJuris on http://localhost:5000 ...
-echo   Press Ctrl+C to stop.
+echo   Press Ctrl+C to stop. Close this window to quit.
 echo   ════════════════════════════════════════════════════════
 echo.
 
-%PYTHON% %SCRIPT%
+%PYTHON% synjuris.py
 
 echo.
 echo   SynJuris stopped.
