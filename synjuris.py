@@ -687,7 +687,8 @@ def init_db():
     conn = get_db()
 
     # ── V1 schema (preserved exactly) ────────────────────────────────────────
-    conn.executescript("""
+   # Define the schema script as a variable first
+    schema_sql = """
     CREATE TABLE IF NOT EXISTS schema_version (
         version INTEGER PRIMARY KEY,
         applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -702,75 +703,10 @@ def init_db():
     );
     CREATE TABLE IF NOT EXISTS parties (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-        name TEXT, role TEXT, contact TEXT, attorney TEXT, notes TEXT
+        name TEXT NOT NULL, role TEXT, case_id INTEGER,
+        FOREIGN KEY (case_id) REFERENCES cases (id)
     );
-    CREATE TABLE IF NOT EXISTS evidence (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-        exhibit_number TEXT, content TEXT, source TEXT, event_date TEXT,
-        category TEXT, confirmed INTEGER DEFAULT 0, notes TEXT,
-        file_path TEXT, file_type TEXT, original_filename TEXT,
-        is_deleted INTEGER DEFAULT 0, deleted_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS documents (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-        title TEXT, doc_type TEXT, content TEXT,
-        version INTEGER DEFAULT 1, parent_id INTEGER,
-        is_deleted INTEGER DEFAULT 0, deleted_at DATETIME,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS timeline_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-        event_date TEXT, title TEXT, description TEXT,
-        category TEXT, importance TEXT DEFAULT 'normal',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS financials (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-        entry_date TEXT, description TEXT, amount REAL, category TEXT,
-        direction TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS deadlines (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-        due_date TEXT, title TEXT, description TEXT,
-        completed INTEGER DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS chat_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-        role TEXT, content TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS audit_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
-        action_type TEXT NOT NULL, ai_call_type TEXT,
-        state_x INTEGER, state_y INTEGER, state_z INTEGER,
-        trace_hash TEXT NOT NULL,
-        state_snapshot_json TEXT, prompt_inputs_json TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        tier TEXT DEFAULT 'pro_se',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS sessions (
-        token TEXT PRIMARY KEY,
-        user_id INTEGER,
-        expires_at DATETIME NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS auth_attempts (
+    CREATE TABLE IF NOT EXISTS login_attempts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT NOT NULL,
         attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -782,7 +718,19 @@ def init_db():
         result_json TEXT,
         verified_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
-    """)
+    """
+
+    if USE_POSTGRES:
+        # Render/PostgreSQL logic: split and execute each statement 
+        with conn.cursor() as cur:
+            for statement in schema_sql.split(';'):
+                if statement.strip():
+                    # Remove AUTOINCREMENT for PostgreSQL compatibility
+                    clean_sql = statement.replace("AUTOINCREMENT", "")
+                    cur.execute(clean_sql)
+    else:
+        # Local/SQLite logic: keep original executescript [cite: 25, 27]
+        conn.executescript(schema_sql)
     conn.commit()
 
     # ── V2 schema additions ───────────────────────────────────────────────────
