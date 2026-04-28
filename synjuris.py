@@ -745,28 +745,51 @@ def init_db():
             pass
 
     # V2 job persistence table
-  with conn.cursor() as cur:
-    for statement in schema_sql.split(';'):
-        if statement.strip():
-            cur.execute(statement)
-    conn.commit()
-    CREATE TABLE IF NOT EXISTS generation_jobs (
-        job_id TEXT PRIMARY KEY,
-        case_id INTEGER,
-        doc_type TEXT,
-        state TEXT DEFAULT 'pending',
-        evidence_hash TEXT,
-        doc_id INTEGER,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        completed_at TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS waitlist (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT NOT NULL UNIQUE,
-        platform TEXT DEFAULT 'desktop',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """)
+ # V2 job persistence table
+        if USE_POSTGRES:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS generation_jobs (
+                        job_id TEXT PRIMARY KEY,
+                        case_id INTEGER,
+                        doc_type TEXT,
+                        state TEXT DEFAULT 'pending',
+                        evidence_hash TEXT,
+                        doc_id INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        completed_at TIMESTAMP
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS waitlist (
+                        id SERIAL PRIMARY KEY,
+                        email TEXT NOT NULL UNIQUE,
+                        platform TEXT DEFAULT 'desktop',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+            conn.commit()
+        else:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS generation_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    case_id INTEGER,
+                    doc_type TEXT,
+                    state TEXT DEFAULT 'pending',
+                    evidence_hash TEXT,
+                    doc_id INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    completed_at DATETIME
+                );
+                CREATE TABLE IF NOT EXISTS waitlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL UNIQUE,
+                    platform TEXT DEFAULT 'desktop',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+        conn.commit()
+        conn.close()
     conn.commit()
     conn.close()
     os.makedirs(UPLOADS_DIR, exist_ok=True)
