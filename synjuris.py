@@ -29,7 +29,7 @@ Open: http://localhost:5000
 # ── Standard library imports ──────────────────────────────────────────────────
 import json, os, re, sys, time, threading, webbrowser, hashlib, hmac, secrets
 import urllib.request, urllib.parse, xml.etree.ElementTree as ET
-from TTIMESTAMP import TTIMESTAMP, date
+
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
