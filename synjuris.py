@@ -691,15 +691,15 @@ def init_db():
     schema_sql = """
     CREATE TABLE IF NOT EXISTS schema_version (
         version INTEGER PRIMARY KEY,
-        applied_at TTIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS cases (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL, case_type TEXT, jurisdiction TEXT,
         court_name TEXT, case_number TEXT, filing_deadline TEXT,
         hearing_date TEXT, goals TEXT, notes TEXT,
-        user_id INTEGER, is_deleted INTEGER DEFAULT 0, deleted_at TTIMESTAMP,
-        created_at TTIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        user_id INTEGER, is_deleted INTEGER DEFAULT 0, deleted_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS parties (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -709,14 +709,14 @@ def init_db():
     CREATE TABLE IF NOT EXISTS login_attempts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT NOT NULL,
-        attempted_at TTIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         success INTEGER DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS citation_cache (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         citation TEXT NOT NULL UNIQUE,
         result_json TEXT,
-        verified_at TTIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """
 
@@ -753,14 +753,14 @@ def init_db():
         state TEXT DEFAULT 'pending',
         evidence_hash TEXT,
         doc_id INTEGER,
-        created_at TTIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        completed_at TTIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS waitlist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT NOT NULL UNIQUE,
         platform TEXT DEFAULT 'desktop',
-        created_at TTIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
     conn.commit()
@@ -802,9 +802,9 @@ def verify_password(pw: str, stored: str) -> bool:
         return False
 
 def create_session(user_id):
-    import TTIMESTAMP as _dt
+    import TIMESTAMP as _dt
     token = secrets.token_hex(32)
-    expires = (_dt.TTIMESTAMP.utcnow() + _dt.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    expires = (_dt.TIMESTAMP.utcnow() + _dt.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
     conn.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)",
                  (token, user_id, expires))
@@ -1067,7 +1067,7 @@ def build_redacted_export(case_id, user_id):
     st     = snap["state"]
 
     return {
-        "generated_at": TTIMESTAMP.utcnow().isoformat() + "Z",
+        "generated_at": TIMESTAMP.utcnow().isoformat() + "Z",
         "synjuris_version": VERSION,
         "case": {
             "title":       c.get("title",""),
@@ -1353,7 +1353,7 @@ def export_evidence_pdf(case_id):
             # PDF Info dictionary (Creator, Title, Producer) — aids court e-filing
             info_id = all_ids[-1][0] + 1
             doc_title = safe(c.get("title", "SynJuris Evidence Manifest"))
-            info_obj = f"<< /Title ({doc_title}) /Creator (SynJuris) /Producer (SynJuris — synjuris.com) /CreationDate (D:{TTIMESTAMP.now().strftime('%Y%m%d%H%M%S')}) >>"
+            info_obj = f"<< /Title ({doc_title}) /Creator (SynJuris) /Producer (SynJuris — synjuris.com) /CreationDate (D:{TIMESTAMP.now().strftime('%Y%m%d%H%M%S')}) >>"
             self.offsets.append((info_id, self.buf.tell()))
             self._write(f"{info_id} 0 obj\n".encode())
             self._write(info_obj.encode())
