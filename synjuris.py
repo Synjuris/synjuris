@@ -1382,6 +1382,552 @@ document.addEventListener('keydown',function(e){if(e.key==='Enter'){
 </body>
 </html>"""
 
+
+LANDING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SynJuris — Legal Intelligence for Pro Se Litigants</title>
+<meta name="description" content="SynJuris helps you organize evidence, track deadlines, and walk into court prepared — even if this is your first time. Built by a pro se dad. Perfected for you.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0D1B2A;
+  --surface:#111f30;
+  --border:#1e3248;
+  --ink:#E8DFC8;
+  --ink2:#A89F8A;
+  --ink3:#6B7A8D;
+  --gold:#C9A84C;
+  --gold2:#e0bb62;
+  --green:#4CAF7D;
+  --red:#E05C5C;
+  --blue:#4A90D9;
+}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:'Inter',system-ui,sans-serif;line-height:1.7;font-size:16px}
+
+/* ── NAV ── */
+nav{position:sticky;top:0;z-index:100;background:rgba(13,27,42,0.97);backdrop-filter:blur(10px);border-bottom:1px solid rgba(201,168,76,0.2);padding:16px 40px;display:flex;align-items:center;justify-content:space-between}
+.nav-logo{font-family:'Cinzel',serif;font-size:20px;font-weight:700;color:var(--gold);letter-spacing:.12em}
+.nav-links{display:flex;align-items:center;gap:12px}
+.nav-link{color:var(--ink2);text-decoration:none;font-size:14px;transition:color .2s}
+.nav-link:hover{color:var(--gold)}
+.btn{display:inline-flex;align-items:center;justify-content:center;padding:11px 24px;border-radius:6px;font-family:'Inter',sans-serif;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;transition:all .2s;border:none}
+.btn-primary{background:var(--gold);color:#0D1B2A}
+.btn-primary:hover{background:var(--gold2);transform:translateY(-1px)}
+.btn-ghost{background:transparent;color:var(--ink2);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--gold);color:var(--gold)}
+.btn-large{padding:16px 40px;font-size:16px;border-radius:8px}
+.btn-xl{padding:20px 52px;font-size:18px;border-radius:8px;letter-spacing:.02em}
+
+/* ── HERO ── */
+.hero{min-height:92vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:80px 24px;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 40%,rgba(201,168,76,0.06) 0%,transparent 70%);pointer-events:none}
+.hero-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.2em;color:var(--gold);margin-bottom:24px;opacity:.9}
+.hero h1{font-family:'Cinzel',serif;font-size:clamp(36px,6vw,72px);font-weight:700;line-height:1.1;margin-bottom:28px;max-width:800px}
+.hero h1 em{font-style:normal;color:var(--gold)}
+.hero-sub{font-size:clamp(17px,2.2vw,22px);color:var(--ink2);max-width:580px;margin:0 auto 16px;font-weight:300;line-height:1.8}
+.hero-origin{font-size:15px;color:var(--ink3);max-width:480px;margin:0 auto 48px;font-style:italic;line-height:1.8}
+.hero-origin strong{color:var(--ink2);font-style:normal}
+.hero-cta-group{display:flex;flex-direction:column;align-items:center;gap:14px}
+.hero-price{font-size:13px;color:var(--ink3);margin-top:4px}
+.hero-price strong{color:var(--gold);font-size:16px}
+.hero-badges{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:32px}
+.badge{font-size:12px;padding:6px 14px;border-radius:20px;border:1px solid var(--border);color:var(--ink3)}
+
+/* ── TRUST BAR ── */
+.trust-bar{background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding:20px 40px;display:flex;justify-content:center;gap:48px;flex-wrap:wrap}
+.trust-item{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink2)}
+.trust-icon{font-size:16px}
+
+/* ── SECTION BASE ── */
+section{padding:96px 24px}
+.container{max-width:1100px;margin:0 auto}
+.section-tag{font-size:11px;text-transform:uppercase;letter-spacing:.18em;color:var(--gold);margin-bottom:14px}
+.section-title{font-family:'Cinzel',serif;font-size:clamp(28px,4vw,44px);font-weight:600;line-height:1.2;margin-bottom:20px}
+.section-sub{font-size:18px;color:var(--ink2);max-width:580px;line-height:1.8;font-weight:300}
+
+/* ── PROBLEM SECTION ── */
+.problem{background:var(--surface)}
+.problem-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center;margin-top:56px}
+.problem-list{display:flex;flex-direction:column;gap:20px}
+.problem-item{display:flex;gap:14px;align-items:flex-start}
+.problem-icon{font-size:20px;flex-shrink:0;margin-top:2px}
+.problem-text h4{font-size:16px;font-weight:600;margin-bottom:4px}
+.problem-text p{font-size:14px;color:var(--ink2);line-height:1.7}
+.problem-stat{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:32px;text-align:center}
+.stat-num{font-family:'Cinzel',serif;font-size:56px;font-weight:700;color:var(--gold);line-height:1}
+.stat-label{font-size:14px;color:var(--ink2);margin-top:8px;line-height:1.6}
+.stat-source{font-size:11px;color:var(--ink3);margin-top:8px}
+
+/* ── FEATURES ── */
+.features-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-top:56px}
+.feature-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;transition:border-color .2s,transform .2s}
+.feature-card:hover{border-color:rgba(201,168,76,0.4);transform:translateY(-2px)}
+.feature-icon{font-size:28px;margin-bottom:14px}
+.feature-card h3{font-size:17px;font-weight:600;margin-bottom:10px}
+.feature-card p{font-size:14px;color:var(--ink2);line-height:1.7}
+.feature-tag{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.1em;padding:3px 8px;border-radius:4px;background:rgba(201,168,76,0.12);color:var(--gold);margin-bottom:10px}
+
+/* ── HOW IT WORKS ── */
+.how{background:var(--surface)}
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:24px;margin-top:56px;position:relative}
+.step{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:28px;text-align:center}
+.step-num{font-family:'Cinzel',serif;font-size:40px;font-weight:700;color:var(--gold);opacity:.3;line-height:1;margin-bottom:14px}
+.step h3{font-size:16px;font-weight:600;margin-bottom:8px}
+.step p{font-size:14px;color:var(--ink2);line-height:1.7}
+
+/* ── WHO IT'S FOR ── */
+.audience-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:48px}
+.audience-card{border:1px solid var(--border);border-radius:12px;padding:28px}
+.audience-card h3{font-size:18px;font-weight:600;margin-bottom:12px}
+.audience-card ul{list-style:none;display:flex;flex-direction:column;gap:8px}
+.audience-card ul li{font-size:14px;color:var(--ink2);padding-left:18px;position:relative;line-height:1.6}
+.audience-card ul li::before{content:'→';position:absolute;left:0;color:var(--gold)}
+
+/* ── PRICING ── */
+.pricing{background:var(--surface)}
+.pricing-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:56px;max-width:800px;margin-left:auto;margin-right:auto}
+.price-card{border-radius:16px;padding:36px;border:1px solid var(--border)}
+.price-card.featured{background:linear-gradient(135deg,rgba(201,168,76,0.1),rgba(201,168,76,0.04));border-color:var(--gold);position:relative}
+.price-badge{position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:var(--gold);color:#0D1B2A;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;padding:4px 14px;border-radius:20px;white-space:nowrap}
+.price-name{font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);margin-bottom:8px}
+.price-amount{font-family:'Cinzel',serif;font-size:48px;font-weight:700;color:var(--gold);line-height:1;margin-bottom:4px}
+.price-period{font-size:13px;color:var(--ink3);margin-bottom:24px}
+.price-features{list-style:none;display:flex;flex-direction:column;gap:10px;margin-bottom:32px}
+.price-features li{font-size:14px;color:var(--ink2);display:flex;align-items:flex-start;gap:8px;line-height:1.5}
+.price-features li::before{content:'✓';color:var(--green);flex-shrink:0;font-weight:700}
+.price-features li.muted{color:var(--ink3)}
+.price-features li.muted::before{content:'○';color:var(--ink3)}
+.price-cta{width:100%;text-align:center}
+
+/* ── WAITLIST ── */
+.waitlist-box{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:40px;text-align:center;max-width:520px;margin:48px auto 0}
+.waitlist-box h3{font-family:'Cinzel',serif;font-size:22px;font-weight:600;margin-bottom:10px}
+.waitlist-box p{font-size:15px;color:var(--ink2);margin-bottom:24px;line-height:1.7}
+.waitlist-form{display:flex;gap:10px;max-width:420px;margin:0 auto}
+.waitlist-form input{flex:1;padding:12px 16px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--ink);font-size:15px;font-family:'Inter',sans-serif;outline:none}
+.waitlist-form input:focus{border-color:var(--gold)}
+#waitlist-success{display:none;color:var(--green);font-size:14px;margin-top:12px}
+
+/* ── REASSURANCE ── */
+.reassure{background:var(--surface)}
+.reassure-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px;margin-top:48px}
+.reassure-card{padding:24px;border:1px solid var(--border);border-radius:10px}
+.reassure-card h4{font-size:14px;font-weight:600;color:var(--gold);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.reassure-card p{font-size:14px;color:var(--ink2);line-height:1.7}
+
+/* ── FINAL CTA ── */
+.final-cta{text-align:center;padding:120px 24px}
+.final-cta h2{font-family:'Cinzel',serif;font-size:clamp(28px,4vw,48px);font-weight:700;margin-bottom:20px;line-height:1.2}
+.final-cta p{font-size:18px;color:var(--ink2);max-width:500px;margin:0 auto 40px;line-height:1.8;font-weight:300}
+
+/* ── FOOTER ── */
+footer{background:var(--surface);border-top:1px solid var(--border);padding:32px 40px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px}
+footer p{font-size:12px;color:var(--ink3)}
+.footer-links{display:flex;gap:20px}
+.footer-links a{font-size:12px;color:var(--ink3);text-decoration:none}
+.footer-links a:hover{color:var(--gold)}
+
+/* ── RESPONSIVE ── */
+@media(max-width:768px){
+  nav{padding:14px 20px}
+  .nav-links .btn-ghost{display:none}
+  .problem-grid{grid-template-columns:1fr}
+  .audience-grid{grid-template-columns:1fr}
+  .pricing-grid{grid-template-columns:1fr}
+  .trust-bar{gap:20px;padding:20px}
+  .waitlist-form{flex-direction:column}
+  section{padding:64px 20px}
+  footer{flex-direction:column;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<!-- ── NAV ── -->
+<nav>
+  <div class="nav-logo">SYNJURIS</div>
+  <div class="nav-links">
+    <a href="#features" class="nav-link">Features</a>
+    <a href="#how" class="nav-link">How It Works</a>
+    <a href="#pricing" class="nav-link">Pricing</a>
+    <a href="/login" class="btn btn-ghost" style="padding:8px 18px;font-size:13px">Sign In</a>
+    <a href="https://synjuris.gumroad.com" target="_blank" class="btn btn-primary" style="padding:8px 18px;font-size:13px">Get SynJuris — $67</a>
+  </div>
+</nav>
+
+<!-- ── HERO ── -->
+<section class="hero">
+  <div class="hero-eyebrow">Local-First · AI-Assisted · Your Data Stays Yours</div>
+  <h1>You Don't Need a Lawyer<br>to <em>Fight Like One.</em></h1>
+  <p class="hero-sub">SynJuris organizes your evidence, tracks your deadlines, and walks you into court prepared — even if this is your first time.</p>
+  <p class="hero-origin"><strong>A pro se dad built it for his own use.</strong><br>He perfected it for yours.</p>
+  <div class="hero-cta-group">
+    <a href="https://synjuris.gumroad.com" target="_blank" class="btn btn-primary btn-xl">Get SynJuris for $67</a>
+    <div class="hero-price">One-time payment · Runs on your computer · No subscription</div>
+  </div>
+  <div class="hero-badges">
+    <span class="badge">🔒 Your data never leaves your machine</span>
+    <span class="badge">⚖️ Built for family court</span>
+    <span class="badge">🤖 AI-powered drafting</span>
+    <span class="badge">📋 Evidence organizer</span>
+  </div>
+</section>
+
+<!-- ── TRUST BAR ── -->
+<div class="trust-bar">
+  <div class="trust-item"><span class="trust-icon">🛡️</span> Work-product protection</div>
+  <div class="trust-item"><span class="trust-icon">🔐</span> AES-256 encrypted backups</div>
+  <div class="trust-item"><span class="trust-icon">⚖️</span> All 50 states + DC</div>
+  <div class="trust-item"><span class="trust-icon">📄</span> Court-ready documents</div>
+  <div class="trust-item"><span class="trust-icon">💻</span> Mac, Windows, Linux</div>
+</div>
+
+<!-- ── PROBLEM ── -->
+<section class="problem">
+  <div class="container">
+    <div class="section-tag">The Reality</div>
+    <h2 class="section-title">The System Wasn't Built for You.<br>We Fixed That.</h2>
+    <p class="section-sub">Most people facing family court can't afford an attorney. They show up unprepared, overwhelmed, and alone — against someone who isn't.</p>
+    <div class="problem-grid">
+      <div class="problem-list">
+        <div class="problem-item">
+          <span class="problem-icon">📁</span>
+          <div class="problem-text">
+            <h4>Evidence gets lost or disorganized</h4>
+            <p>Texts, emails, photos scattered across your phone. Courts expect organized, dated, categorized facts. SynJuris does that automatically.</p>
+          </div>
+        </div>
+        <div class="problem-item">
+          <span class="problem-icon">📅</span>
+          <div class="problem-text">
+            <h4>Missed deadlines end cases</h4>
+            <p>One missed filing date can be used against you. SynJuris tracks every deadline and flags overdue items the moment they slip.</p>
+          </div>
+        </div>
+        <div class="problem-item">
+          <span class="problem-icon">📝</span>
+          <div class="problem-text">
+            <h4>Legal documents feel impossible</h4>
+            <p>Motions, declarations, parenting plans — the format alone is intimidating. SynJuris drafts them using your own facts and your state's actual statutes.</p>
+          </div>
+        </div>
+        <div class="problem-item">
+          <span class="problem-icon">🎯</span>
+          <div class="problem-text">
+            <h4>You don't know what you don't know</h4>
+            <p>SynJuris flags violation patterns in communications, surfaces evidence gaps, and tells you exactly what courts look for in cases like yours.</p>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="problem-stat" style="margin-bottom:16px">
+          <div class="stat-num">73%</div>
+          <div class="stat-label">of family court cases have at least one pro se litigant — someone representing themselves without an attorney</div>
+          <div class="stat-source">National Center for State Courts</div>
+        </div>
+        <div class="problem-stat">
+          <div class="stat-num">$350</div>
+          <div class="stat-label">Average cost of a single hour with a family law attorney. SynJuris costs less than one hour — and works around the clock.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ── -->
+<section id="features">
+  <div class="container">
+    <div class="section-tag">What SynJuris Does</div>
+    <h2 class="section-title">Every Tool You Need.<br>Nothing You Don't.</h2>
+    <p class="section-sub">Built for the reality of representing yourself in court — not watered down, not simplified. The real thing.</p>
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-tag">Evidence</div>
+        <div class="feature-icon">📁</div>
+        <h3>Evidence Organizer with Legal Weight Scoring</h3>
+        <p>Every text, email, photo, and document — logged, categorized, and automatically scored by legal significance. Courts weight evidence differently. SynJuris knows that.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-tag">Detection</div>
+        <div class="feature-icon">🚩</div>
+        <h3>Real-Time Violation Detection</h3>
+        <p>Log a communication and SynJuris scans it for gatekeeping, parental alienation, threats, harassment, order violations, and more — flagged before you forget the details.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-tag">Deadlines</div>
+        <div class="feature-icon">⏱</div>
+        <h3>Deadline Tracking with Overdue Alerts</h3>
+        <p>Every filing date, response deadline, and hearing tracked in one place. Overdue items surface immediately. Missing a court deadline can end your case.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-tag">AI</div>
+        <div class="feature-icon">🤖</div>
+        <h3>AI Legal Assistant — Trained on Your Case</h3>
+        <p>Ask anything. The AI knows your evidence, your deadlines, your parties, and your jurisdiction. Plain English answers, using your actual case facts.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-tag">Documents</div>
+        <div class="feature-icon">📄</div>
+        <h3>Document Generator</h3>
+        <p>Motions, declarations, parenting plans, demand letters — drafted with your case details and formatted for court. Not templates. Actual drafts.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-tag">Hearing Prep</div>
+        <div class="feature-icon">⚖️</div>
+        <h3>Courtroom View & Hearing Prep</h3>
+        <p>Walk into your hearing prepared. Opening statement, evidence introduction order, anticipated arguments — organized the way a judge expects to hear it.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-tag">Analytics</div>
+        <div class="feature-icon">📊</div>
+        <h3>Case Dynamics Engine</h3>
+        <p>A live score of your case across three dimensions: evidence strength, procedural health, and adversarial pressure. Deterministic, auditable, updated in real time.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-tag">Security</div>
+        <div class="feature-icon">🔐</div>
+        <h3>Encrypted Backup & Tamper-Evident Audit Trail</h3>
+        <p>AES-256 encrypted backups only you can open. Every AI interaction logged with a cryptographic hash chain — provably unmodified if it ever matters in court.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-tag">Privacy</div>
+        <div class="feature-icon">🛡️</div>
+        <h3>Work-Product Protection</h3>
+        <p>Cloud AI tools have been ruled non-privileged in federal proceedings. SynJuris runs on your machine. Your strategy may retain work-product status cloud tools can't provide.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ── -->
+<section class="how" id="how">
+  <div class="container">
+    <div class="section-tag">Getting Started</div>
+    <h2 class="section-title">Up and Running in Minutes.</h2>
+    <p class="section-sub">No installation wizard. No technical knowledge required. Double-click and go.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">01</div>
+        <h3>Download & Launch</h3>
+        <p>Purchase and download SynJuris. Double-click the launcher. It opens in your browser at localhost — nothing goes to the internet.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">02</div>
+        <h3>Create Your Case</h3>
+        <p>Enter your case type, jurisdiction, and hearing date. That's enough to get started. Add more detail as you go.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">03</div>
+        <h3>Add Your Evidence</h3>
+        <p>Type, paste, or import messages. SynJuris flags violations automatically and scores your evidence as you build.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">04</div>
+        <h3>Walk In Prepared</h3>
+        <p>Generate documents, run hearing prep, open Courtroom View at the podium. You'll know exactly what to say and when.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── WHO IT'S FOR ── -->
+<section>
+  <div class="container">
+    <div class="section-tag">Who Uses SynJuris</div>
+    <h2 class="section-title">Built for Anyone<br>Navigating Court Alone.</h2>
+    <div class="audience-grid">
+      <div class="audience-card">
+        <h3>👤 Pro Se Litigants</h3>
+        <ul>
+          <li>Custody and visitation disputes</li>
+          <li>Child support modifications</li>
+          <li>Protective order requests</li>
+          <li>Divorce proceedings</li>
+          <li>Contempt and enforcement actions</li>
+          <li>Anyone who can't afford an attorney but refuses to lose</li>
+        </ul>
+      </div>
+      <div class="audience-card">
+        <h3>⚖️ Legal Professionals</h3>
+        <ul>
+          <li>Attorneys wanting a local-first case tool</li>
+          <li>Paralegals organizing client evidence</li>
+          <li>Legal aid organizations</li>
+          <li>Law school clinics</li>
+          <li>Anyone who values work-product protection</li>
+          <li>Switch to Attorney mode for portal and billing features</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PRICING ── -->
+<section class="pricing" id="pricing">
+  <div class="container" style="text-align:center">
+    <div class="section-tag">Simple Pricing</div>
+    <h2 class="section-title">Pay Once. Own It Forever.</h2>
+    <p class="section-sub" style="margin:0 auto 0">No subscription. No monthly fees. No data going to anyone's server.</p>
+    <div class="pricing-grid">
+
+      <div class="price-card featured">
+        <div class="price-badge">Available Now</div>
+        <div class="price-name">SynJuris Local</div>
+        <div class="price-amount">$67</div>
+        <div class="price-period">One-time · Yours forever</div>
+        <ul class="price-features">
+          <li>Runs entirely on your computer</li>
+          <li>All AI features (bring your own API key)</li>
+          <li>Unlimited cases and evidence</li>
+          <li>All 50 states + DC statutes</li>
+          <li>Document generator + hearing prep</li>
+          <li>Encrypted backups</li>
+          <li>Mac, Windows, and Linux</li>
+          <li>Free updates included</li>
+        </ul>
+        <a href="https://synjuris.gumroad.com" target="_blank" class="btn btn-primary btn-large price-cta">Get SynJuris — $67</a>
+        <p style="font-size:12px;color:var(--ink3);margin-top:12px">Instant download after purchase</p>
+      </div>
+
+      <div class="price-card">
+        <div class="price-name">SynJuris Cloud</div>
+        <div class="price-amount" style="font-size:36px;color:var(--ink3)">Soon</div>
+        <div class="price-period">Hosted · No setup required</div>
+        <ul class="price-features">
+          <li>Nothing to install or maintain</li>
+          <li>Access from any device</li>
+          <li>All Local features included</li>
+          <li class="muted">Attorney collaboration tools</li>
+          <li class="muted">Client portal access</li>
+          <li class="muted">Priority support</li>
+        </ul>
+        <button onclick="document.getElementById('waitlist-email').focus()" class="btn btn-ghost btn-large price-cta" style="width:100%">Join the Waitlist</button>
+        <p style="font-size:12px;color:var(--ink3);margin-top:12px">Be first to know when it launches</p>
+      </div>
+
+    </div>
+
+    <!-- Waitlist -->
+    <div class="waitlist-box">
+      <h3>Cloud Version — Coming Soon</h3>
+      <p>No download. No setup. Just sign in and start building your case from any device. Leave your email and you'll be the first to know.</p>
+      <div class="waitlist-form">
+        <input type="email" id="waitlist-email" placeholder="your@email.com">
+        <button onclick="submitWaitlist()" class="btn btn-primary">Notify Me</button>
+      </div>
+      <div id="waitlist-success">✓ You're on the list. We'll reach out when the cloud version launches.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── REASSURANCE ── -->
+<section class="reassure">
+  <div class="container">
+    <div class="section-tag">Peace of Mind</div>
+    <h2 class="section-title">A Few Things Worth Knowing.</h2>
+    <div class="reassure-grid">
+      <div class="reassure-card">
+        <h4>SynJuris is not a law firm</h4>
+        <p>SynJuris provides legal information and organizational tools. It does not provide legal advice and does not create an attorney-client relationship. Always consult a licensed attorney before filing.</p>
+      </div>
+      <div class="reassure-card">
+        <h4>Your data is yours. Period.</h4>
+        <p>Everything you enter stays on your computer. No data is sold, shared, or analyzed. The only thing that leaves your machine is the text of AI messages — sent directly to your AI provider under your own API key.</p>
+      </div>
+      <div class="reassure-card">
+        <h4>Built on real experience</h4>
+        <p>SynJuris was built by a father who went through family court pro se. Every feature exists because someone needed it. This isn't a product built by people guessing at your situation.</p>
+      </div>
+      <div class="reassure-card">
+        <h4>You're in control</h4>
+        <p>SynJuris presents options and information. You make every decision. The branching action system shows you what's available — never tells you what to do. Your case, your call.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FINAL CTA ── -->
+<section class="final-cta">
+  <div class="section-tag">Get Started Today</div>
+  <h2>Stop Going In Unprepared.</h2>
+  <p>For less than one hour with an attorney, you get a tool that works with you around the clock — organizing, preparing, and helping you show up ready.</p>
+  <a href="https://synjuris.gumroad.com" target="_blank" class="btn btn-primary btn-xl">Get SynJuris — $67</a>
+  <p style="font-size:13px;color:var(--ink3);margin-top:16px">One-time payment · Instant download · No subscription</p>
+</section>
+
+<!-- ── FOOTER ── -->
+<footer>
+  <p>© 2026 SynJuris. Built for pro se litigants.</p>
+  <div class="footer-links">
+    <a href="/login">Sign In</a>
+    <a href="https://synjuris.gumroad.com" target="_blank">Buy Local Version</a>
+    <a href="mailto:support@synjuris.com">support@synjuris.com</a>
+  </div>
+  <p style="font-size:11px;color:var(--ink3);margin-top:8px;width:100%;text-align:center">
+    SynJuris is not a law firm and does not provide legal advice. This software is an organizational and informational tool only.
+    Always consult a licensed attorney before filing any document with a court.
+  </p>
+</footer>
+
+<script>
+// Smooth scroll for nav links
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const el = document.querySelector(a.getAttribute('href'));
+    if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
+  });
+});
+
+// Waitlist form
+async function submitWaitlist(){
+  const email = document.getElementById('waitlist-email').value.trim();
+  if(!email || !email.includes('@')){
+    alert('Please enter a valid email address.');
+    return;
+  }
+  // Store locally for now — replace with your email service endpoint
+  document.getElementById('waitlist-success').style.display = 'block';
+  document.getElementById('waitlist-email').value = '';
+  document.querySelector('.waitlist-form button').disabled = true;
+
+  // Optional: POST to your own endpoint
+  try {
+    await fetch('/api/waitlist', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email, source: 'landing_page', ts: new Date().toISOString()})
+    });
+  } catch(e) {
+    // Silent — the UI already confirmed to the user
+  }
+}
+
+// Enter key on waitlist
+document.getElementById('waitlist-email').addEventListener('keydown', e => {
+  if(e.key === 'Enter') submitWaitlist();
+});
+</script>
+</body>
+</html>"""
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # UNIVERSAL AI PROVIDER LAYER
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2653,11 +3199,11 @@ class Handler(BaseHTTPRequestHandler):
 
         # Main app — require auth
         if path in ("/", "/index.html"):
+            if LOCAL_MODE:
+                self.send_html(UI); return
             uid = get_user_from_token(get_token_from_request(self))
             if not uid:
-                self.send_response(302)
-                self.send_header("Location", "/login")
-                self.end_headers(); return
+                self.send_html(LANDING_HTML); return
             self.send_html(UI); return
 
         if path == "/api/cases":
@@ -3125,6 +3671,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path; b = self.body()
+
+        # ── Waitlist ──
+        if path == "/api/waitlist":
+            email = b.get("email","").strip().lower()
+            if email and "@" in email:
+                try:
+                    conn = get_db()
+                    conn.execute(
+                        "INSERT INTO waitlist (email, source, created_at) "
+                        "VALUES (?,?,CURRENT_TIMESTAMP) ON CONFLICT(email) DO NOTHING",
+                        (email, b.get("source","landing_page"))
+                    )
+                    conn.commit(); conn.close()
+                except Exception:
+                    pass
+            self.send_json({"ok": True}); return
 
         # ── Signup ──
         if path == "/api/signup":
@@ -6778,20 +7340,24 @@ function nc3(){
   const names=[...document.querySelectorAll('.pn')].map(e=>e.value);
   const roles=[...document.querySelectorAll('.pr')].map(e=>e.value);
   _nd.parties=names.map((n,i)=>({name:n,role:roles[i]})).filter(p=>p.name.trim());
-  showMo('New Case — Details',`<div style="display:flex;gap:5px;margin-bottom:16px">${[1,2,3].map(i=>`<span class="sdot${i===3?' active':' done'}"></span>`).join('')}</div>
+  showMo('New Case — Almost Done',`<div style="display:flex;gap:5px;margin-bottom:16px">${[1,2,3].map(i=>`<span class="sdot${i===3?' active':' done'}"></span>`).join('')}</div>
+  <p style="font-size:12px;color:var(--ink2);margin-bottom:12px">These are optional — you can always add them later from the Edit Case button.</p>
   <div class="two-col">
-    <div class="fg"><label>Filing / Response Deadline</label><input type="date" id="nc-fdl"></div>
-    <div class="fg"><label>Hearing Date (if scheduled)</label><input type="date" id="nc-hd"></div>
+    <div class="fg"><label>Hearing Date <span style="color:var(--ink3);font-weight:400">(optional)</span></label><input type="date" id="nc-hd"></div>
+    <div class="fg"><label>Filing Deadline <span style="color:var(--ink3);font-weight:400">(optional)</span></label><input type="date" id="nc-fdl"></div>
   </div>
-  <div class="fg"><label>Your Goals</label><textarea id="nc-goals" placeholder="What outcome are you hoping for? e.g. Primary custody, reduction in rent, return of deposit…"></textarea></div>
-  <div class="fg"><label>Background Notes</label><textarea id="nc-notes" placeholder="Brief summary of the situation…"></textarea></div>
-  <div class="notice n-info" style="margin-top:8px">Everything is saved locally on your computer only.</div>
-  <div class="br"><button class="btn btn-s" onclick="nc2()">← Back</button><button class="btn btn-p" onclick="createCase()">Create Case</button></div>`);
+  <div class="fg"><label>Your Goals <span style="color:var(--ink3);font-weight:400">(optional)</span></label><textarea id="nc-goals" placeholder="What outcome are you hoping for? You can add this later."></textarea></div>
+  <div class="br">
+    <button class="btn btn-s" onclick="nc2()">← Back</button>
+    <button class="btn btn-s" onclick="createCase()">Skip & Create</button>
+    <button class="btn btn-p" onclick="createCase()">Create Case →</button>
+  </div>\`);
 }
 async function createCase(){
   _nd.filing_deadline=val('nc-fdl'); _nd.hearing_date=val('nc-hd');
   _nd.goals=val('nc-goals'); _nd.notes=val('nc-notes');
   const d=await api('/api/cases',_nd);
+  if(!d||d.error){alert('Could not create case: '+(d&&d.error?d.error:'Unknown error'));return;}
   closeMo(); await loadCases(); await loadCase(d.id);
 }
 
@@ -7491,7 +8057,7 @@ if __name__ == "__main__":
     threading.Thread(target=check_for_update, daemon=True).start()
     if PORT == 5000:
         threading.Thread(target=open_browser, daemon=True).start()
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
