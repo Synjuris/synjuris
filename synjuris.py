@@ -1,814 +1,1127 @@
+
 """
-SynJuris v2.0.0 — Upgraded Architecture
-========================================
-Integrates all v2 modules into the existing server pattern.
-
-NEW in v2:
-  ✦ Merkle DAG audit ledger (per-exhibit tamper-evidence, not just state snapshots)
-  ✦ Semantic pattern detection (bi-encoder + Aho-Corasick + negation detection)
-  ✦ Streaming SSE document generation (first token in <500ms)
-  ✦ Async job queue (non-blocking, idempotent, with speculative pre-generation)
-  ✦ Predictive document readiness scoring (reorders Documents tab, drives pre-gen)
-  ✦ Evidence gap detection (surfaces what's typically missing for your case type)
-  ✦ Merkle proof generation per exhibit (court-ready cryptographic statements)
-  ✦ DAG integrity verification endpoint (/api/cases/:id/dag-verify)
-  ✦ Job status + SSE stream endpoints (/api/jobs/:id, /api/jobs/:id/stream)
-  ✦ Readiness scores endpoint (/api/cases/:id/readiness)
-
-PRESERVED from v1:
-  - All existing endpoints and behavior
-  - SQLite schema (new tables added, none removed)
-  - The full original audit_log system (still running alongside Merkle DAG)
-  - All UI JavaScript (new endpoints added to existing tabs)
-  - All exports (PDF, DOCX, TXT, encrypted backup)
-
-Run:  python3 synjuris-20.py
+SynJuris â€” Local Legal Assistant for Pro Se Litigants
+Run:  python3 server.py
 Open: http://localhost:5000
+Your data never leaves this computer.
 """
 
-# ── Standard library imports ──────────────────────────────────────────────────
-import json, os, re, sys, time, threading, webbrowser, hashlib, hmac, secrets
-import urllib.request, urllib.parse, xml.etree.ElementTree as ET
-
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import sqlite3, json, os, re, xml.etree.ElementTree as ET
+import webbrowser, threading, urllib.request, urllib.parse
+import hashlib, hmac, time
+from datetime import datetime, date
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-# ── Optional SDK check (enables true streaming) ───────────────────────────────
-try:
-    import anthropic as _anthropic_sdk
-    HAS_ANTHROPIC_SDK = True
-except ImportError:
-    HAS_ANTHROPIC_SDK = False
-
-# ── V2 module imports (graceful degradation if modules not found) ─────────────
-_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-if _MODULE_DIR not in sys.path:
-    sys.path.insert(0, _MODULE_DIR)
-
-try:
-    from merkle_dag import (
-        init_merkle_schema, add_exhibit_to_dag, verify_case_dag,
-        get_exhibit_proof, generate_proof_statement, GENESIS_HASH
-    )
-    HAS_MERKLE = True
-except ImportError:
-    HAS_MERKLE = False
-    print("  ⚠  merkle_dag.py not found — using legacy audit hash")
-
-try:
-    from pattern_engine import scan_patterns as _semantic_scan, detect_evidence_gaps
-    HAS_SEMANTIC = True
-except ImportError:
-    HAS_SEMANTIC = False
-    print("  ⚠  pattern_engine.py not found — using regex patterns")
-
-try:
-    from job_queue import JobQueue, job_status_response, compute_evidence_hash
-    HAS_QUEUE = True
-except ImportError:
-    HAS_QUEUE = False
-    print("  ⚠  job_queue.py not found — using blocking generation")
-
-try:
-    from readiness_engine import compute_readiness_scores, get_readiness_summary
-    HAS_READINESS = True
-except ImportError:
-    HAS_READINESS = False
-    print("  ⚠  readiness_engine.py not found — readiness scoring disabled")
-
-try:
-    from jurisdiction_helpers import jurisdiction_statute_block, resolve_jurisdiction
-except ImportError:
-    # Inline fallback
-    def jurisdiction_statute_block(j): return f"Jurisdiction: {j or 'Not set'}"
-    def resolve_jurisdiction(j): return j, {}
-
-# ── Configuration ─────────────────────────────────────────────────────────────
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-USE_POSTGRES  = bool(DATABASE_URL)
-
-if USE_POSTGRES:
-    import psycopg2
-    import psycopg2.extras
-else:
-    import sqlite3
-
-_BASE        = "/data" if os.path.isdir("/data") else _MODULE_DIR
+_BASE        = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
 DB_PATH      = os.path.join(_BASE, "synjuris.db")
 API_KEY      = os.environ.get("ANTHROPIC_API_KEY", "")
 UPLOADS_DIR  = os.path.join(_BASE, "uploads")
 PORT         = int(os.environ.get("PORT", 5000))
-LOCAL_MODE   = (not USE_POSTGRES and not os.environ.get("REQUIRE_AUTH"))
-VERSION      = "2.0.0"
+VERSION      = "1.0.0"
 UPDATE_URL   = "https://raw.githubusercontent.com/synjuris/synjuris/main/version.json"
 
-# ── Paste the FULL synjuris.py content here ───────────────────────────────────
-# This file is a PATCH file — it overrides specific functions from synjuris.py.
-# The cleanest deployment: rename synjuris.py → synjuris_base.py and
-# import everything from it, then override below.
-#
-# For single-file deployment, copy the full synjuris.py content here,
-# then the overrides below replace the upgraded sections.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Import everything from the base server
-try:
-    # When deployed alongside the original
-    import importlib.util
-    _base_path = os.path.join(_MODULE_DIR, "synjuris-10.py")
-    if not os.path.exists(_base_path):
-        _base_path = os.path.join(_MODULE_DIR, "synjuris.py")
-
-    if os.path.exists(_base_path):
-        spec = importlib.util.spec_from_file_location("synjuris_base", _base_path)
-        _base = importlib.util.module_from_spec(spec)
-        # Don't execute — we'll inherit selectively
-        # spec.loader.exec_module(_base)
-except Exception:
-    pass
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# V2 OVERRIDES — these replace the corresponding functions in the base server
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ── Database connection (preserved from v1, extended for v2 schemas) ──────────
-
-class _HybridRow(dict):
-    def __init__(self, d):
-        super().__init__(d)
-        self._vals = list(d.values())
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return self._vals[key]
-        return super().__getitem__(key)
-
-def get_db():
-    if USE_POSTGRES:
-        # PostgreSQL path (cloud deployment) — preserved from v1
-        conn = psycopg2.connect(DATABASE_URL,
-                                cursor_factory=psycopg2.extras.RealDictCursor)
-        return conn
-    else:
-        conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 30000")
-        return conn
-
-
-# ── V2 pattern scanning (with semantic fallback) ──────────────────────────────
-
-if HAS_SEMANTIC:
-    def scan_patterns(text: str):
-        """V2 semantic pattern scanner. Same signature as v1."""
-        return _semantic_scan(text, use_semantic=True)
-else:
-    # Preserve v1 regex patterns as fallback
-    _PATTERNS_V1 = [
-        ("Gatekeeping", 5.0,
-         r"(won'?t\s+let\s+(him|her|me|them|you)"
-         r"|denied?\s+(visit|access|time|pickup|drop.?off|exchange)"
-         r"|prevent(ing|ed)?\s+(me|him|her|them)\s+(from\s+)?(see|visit|contact)"
-         r"|(cancel+ed?|call(ed)?\s*off|no.?show)\s*(the\s*)?(visit|exchange|pickup)"
-         r"|block(ed|ing)?\s*(access|contact|visitation)"
-         r"|withhold(ing|ed)?\s+(the\s*)?(child(ren)?|kids?|son|daughter)"
-         r"|interfere\S*\s+with\s+(my\s+)?(parenting|custody|visitation|time))"
-        ),
-        ("Parental Alienation", 4.0,
-         r"(alienat(e|ed|ing|ion)"
-         r"|(turn(ing|ed)|turns)\s+(him|her|them|the\s*kids?)\s+against"
-         r"|(poison(ing|ed)|brainwash(ing|ed))\s+(his|her|their)\s+mind"
-         r"|bad.?mouth(ing|ed)\s+(about\s+)?(me|their\s+(father|mother|dad|mom)))"
-        ),
-        ("Stonewalling", 3.0,
-         r"(won'?t\s+respond|not\s+responding"
-         r"|(never|doesn'?t|don'?t|won'?t)\s+(respond|reply|answer|return)\s+(my\s+)?(call|text|message|email)s?"
-         r"|block(ed|s|ing)?\s+(my\s+)?(number|calls?|texts?)"
-         r"|left\s+(me\s+)?(on\s+)?(read|seen))"
-        ),
-        ("Threats", 5.0,
-         r"((take|taking|gonna\s+take|going\s+to\s+take)\s+(you|this)\s+to\s+court"
-         r"|you'?ll\s+(never|not)\s+(see|have|get)\s+(him|her|them|the\s*kids?)"
-         r"|(call|going\s+to\s+call|gonna\s+call)\s+(the\s*)?(police|cops?|cps|911)"
-         r"|(file|going\s+to\s+file)\s+a\s+(restraining|protective)\s+order)"
-        ),
-        ("Harassment", 4.0,
-         r"(show(ed|ing|s)?\s+up\s+(uninvited|unannounced|at\s+my\s+(house|work|job|school))"
-         r"|(follow(ed|ing|s)|stalking|spying\s+on)\s+me"
-         r"|(blowing\s+up|flooding)\s+my\s+(phone|inbox))"
-        ),
-        ("Violation of Order", 5.0,
-         r"(violat(e|ed|es|ing|ion)\s+(the\s+)?(court\s+order|parenting\s+plan)"
-         r"|in\s+contempt"
-         r"|breaking\s+the\s+(court\s+order|parenting\s+plan))"
-        ),
-        ("Financial", 4.0,
-         r"(child\s+support|alimony|spousal\s+support"
-         r"|(didn'?t|hasn'?t|won'?t)\s+pay"
-         r"|hiding\s+(income|assets?|money))"
-        ),
-        ("Relocation", 5.0,
-         r"((moving|move|relocat\S+)\s+(out\s+of\s+state|to\s+another\s+state)"
-         r"|(taking|took)\s+(him|her|them|the\s*kids?)\s+(out\s+of\s+state))"
-        ),
-    ]
-
-    def scan_patterns(text: str):
-        found = []
-        seen = set()
-        _CONF = {5.0: "strong", 4.0: "likely", 3.0: "likely", 2.0: "possible", 1.0: "possible"}
-        for label, weight, pat in _PATTERNS_V1:
-            if label not in seen and re.search(pat, text, re.IGNORECASE):
-                found.append((label, weight, _CONF.get(weight, "possible")))
-                seen.add(label)
-        return found
-
-
-def top_category(text: str):
-    matches = scan_patterns(text)
-    return matches[0][0] if matches else None
-
-
-# ── V2 evidence confirmation — adds to Merkle DAG ────────────────────────────
-
-def confirm_evidence_v2(conn, exhibit_id: int, case_id: int) -> dict:
-    """
-    Confirm an exhibit and add it to the Merkle DAG.
-    Returns {exhibit_number, node_hash, ok: True}
-    """
-    from merkle_dag import add_exhibit_to_dag as _add_dag
-
-    # Assign exhibit number (from v1 logic)
-    row = conn.execute(
-        "SELECT COUNT(*) as n FROM evidence WHERE case_id=? AND confirmed=1", (case_id,)
-    ).fetchone()
-    n  = (row["n"] if hasattr(row, "__getitem__") else row[0] or 0) + 1
-    en = f"Exhibit {n}"
-
-    conn.execute("UPDATE evidence SET confirmed=1, exhibit_number=? WHERE id=?", (en, exhibit_id))
-    conn.commit()
-
-    # Add to Merkle DAG
-    node_hash = "n/a"
-    if HAS_MERKLE:
-        try:
-            exhibit = conn.execute("SELECT * FROM evidence WHERE id=?", (exhibit_id,)).fetchone()
-            if exhibit:
-                ev_dict = dict(exhibit) if hasattr(exhibit, "keys") else {
-                    "id": exhibit[0], "case_id": exhibit[1], "exhibit_number": exhibit[2],
-                    "content": exhibit[3], "source": exhibit[4], "event_date": exhibit[5],
-                    "category": exhibit[6], "confirmed": exhibit[7],
-                }
-                node_hash = _add_dag(conn, case_id, ev_dict)
-        except Exception as e:
-            print(f"  ⚠  Merkle DAG add failed: {e}")
-
-    return {"exhibit_number": en, "node_hash": node_hash, "ok": True}
-
-
-# ── V2 job queue initialization ───────────────────────────────────────────────
-
-_job_queue = None
-
-def get_job_queue():
-    """Lazy-initialize the job queue singleton."""
-    global _job_queue
-    if not HAS_QUEUE:
-        return None
-    if _job_queue is None:
-        _job_queue = JobQueue.get_instance(
-            call_claude_fn         = call_claude,
-            get_db_fn              = get_db,
-            build_case_system_fn   = build_case_system,
-            verify_citations_fn    = verify_citations_in_text,
-        )
-    return _job_queue
-
-
-# ── Claude API (preserved from v1, extended for SDK streaming) ────────────────
-
-def call_claude(messages, system="", max_tokens=2000, model="claude-sonnet-4-20250514"):
-    if not API_KEY:
-        return ("⚠️ AI features require an Anthropic API key.\n\n"
-                "Set it before starting SynJuris:\n"
-                "  Mac/Linux: export ANTHROPIC_API_KEY=your-key-here\n"
-                "  Windows:   set ANTHROPIC_API_KEY=your-key-here\n\n"
-                "Get a free key at: https://console.anthropic.com")
-    payload = json.dumps({
-        "model": model, "max_tokens": max_tokens,
-        "system": system, "messages": messages
-    }).encode()
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages", data=payload,
-        headers={"Content-Type": "application/json", "x-api-key": API_KEY,
-                 "anthropic-version": "2023-06-01"}
-    )
+def check_for_update():
+    """Non-blocking startup check. Prints notice if newer version exists."""
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.loads(r.read())["content"][0]["text"]
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        if e.code == 529 and model != "claude-haiku-4-5-20251001":
-            return call_claude(messages, system, max_tokens, "claude-haiku-4-5-20251001")
-        codes = {401: "Invalid API key.", 429: "Rate limit.", 500: "Server error.", 529: "Overloaded."}
-        return f"⚠️ {codes.get(e.code, f'API error {e.code}')}"
-    except Exception as e:
-        return f"⚠️ Unexpected error: {e}"
+        req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": f"SynJuris/{VERSION}"})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            data = json.loads(r.read())
+        latest = data.get("version","")
+        notes  = data.get("notes","")
+        if latest and latest != VERSION:
+            print(f"\n  â”Œâ”€ Update available: v{latest} (you have v{VERSION})")
+            if notes: print(f"  â”‚  {notes}")
+            print(f"  â””â”€ Download: https://github.com/synjuris/synjuris/releases/latest\n")
+    except Exception:
+        pass  # Silent â€” never block startup over an update check
 
-
-# ── Preserved v1 functions (inline for single-file deployment) ────────────────
-# These are the functions that the v2 endpoints depend on.
-# In production, these come from synjuris_base (the original synjuris.py).
-
-def _clamp(v): return max(1, min(9, int(v)))
-def _transition(cur, delta):
-    return {"x": _clamp(cur["x"]+delta["x"]), "y": _clamp(cur["y"]+delta["y"]), "z": _clamp(cur["z"]+delta["z"])}
-
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# DETERMINISTIC CASE DYNAMICS ENGINE  (port of engine.ts / hash.ts / types.ts)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+_CLAMP_MIN, _CLAMP_MAX = 1, 9
+def _clamp(v):
+    return max(_CLAMP_MIN, min(_CLAMP_MAX, int(v)))
+def _transition(current, delta):
+    return {"x":_clamp(current["x"]+delta["x"]),
+            "y":_clamp(current["y"]+delta["y"]),
+            "z":_clamp(current["z"]+delta["z"])}
+def _hash_states(states):
+    def _n(o):
+        if isinstance(o,float): return round(o,8)
+        if isinstance(o,dict):  return {k:_n(v) for k,v in sorted(o.items())}
+        if isinstance(o,list):  return [_n(i) for i in o]
+        return o
+    return hashlib.sha256(json.dumps(_n(states),separators=(",",":"),sort_keys=True).encode()).hexdigest()
+_EV_CEIL, _ADV_CEIL = 50.0, 50.0
 _CAT_W = {"Gatekeeping":5.0,"Violation of Order":5.0,"Threats":5.0,"Relocation":5.0,
           "Parental Alienation":4.0,"Harassment":4.0,"Financial":4.0,
           "Stonewalling":3.0,"Emotional Abuse":2.0,"Neglect / Safety":2.0,
           "Substance Concern":2.0,"Child Statement":1.0}
-_EV_CEIL, _ADV_CEIL = 50.0, 50.0
-
 def _s9(raw, ceil):
     if raw <= 0: return 1
-    return _clamp(1 + (raw / ceil) * 8)
-
-def _hash_states(states):
-    def _n(o):
-        if isinstance(o, float): return round(o, 8)
-        if isinstance(o, dict):  return {k: _n(v) for k, v in sorted(o.items())}
-        if isinstance(o, list):  return [_n(i) for i in o]
-        return o
-    return hashlib.sha256(
-        json.dumps(_n(states), separators=(",", ":"), sort_keys=True).encode()
-    ).hexdigest()
-
-
+    return _clamp(1+(raw/ceil)*8)
 def compute_case_state(case_id):
     conn = get_db()
-    ev  = conn.execute(
-        "SELECT id,exhibit_number,content,category,event_date,source FROM evidence "
-        "WHERE case_id=? AND confirmed=1 ORDER BY event_date ASC,id ASC",
-        (case_id,)
-    ).fetchall()
-    dls = conn.execute(
-        "SELECT id,due_date,title,completed FROM deadlines WHERE case_id=?",
-        (case_id,)
-    ).fetchall()
+    ev  = conn.execute("SELECT id,exhibit_number,content,category,event_date,source FROM evidence WHERE case_id=? AND confirmed=1 ORDER BY event_date ASC,id ASC",(case_id,)).fetchall()
+    dls = conn.execute("SELECT id,due_date,title,completed FROM deadlines WHERE case_id=?",(case_id,)).fetchall()
     conn.close()
-
-    ev_w   = sum(_CAT_W.get(e["category"] if hasattr(e,"__getitem__") else e[3], 1.0) for e in ev)
-    adv_w  = sum(_CAT_W.get(e["category"] if hasattr(e,"__getitem__") else e[3], 1.0)
-                 for e in ev if _CAT_W.get(e["category"] if hasattr(e,"__getitem__") else e[3], 0) >= 3.0)
-    total_dl = len(dls)
-    def _dl_completed(d): return d["completed"] if hasattr(d,"__getitem__") else d[3]
-    def _dl_due(d):       return d["due_date"]  if hasattr(d,"__getitem__") else d[1]
-    done_dl  = sum(1 for d in dls if _dl_completed(d))
-    over     = sum(1 for d in dls
-                   if not _dl_completed(d) and _dl_due(d)
-                   and _dl_due(d) < date.today().isoformat())
-
-    y_final = 5 if not total_dl else _clamp(
-        max(0.0, (done_dl / total_dl) * 9 - over * 0.5)
-    ) if (done_dl / total_dl) * 9 - over * 0.5 >= 1 else 1
-    x_final = _s9(ev_w, _EV_CEIL)
-    z_final = _s9(adv_w, _ADV_CEIL)
-
-    running = {"x": 1, "y": y_final, "z": 1}
-    chain = []
-    hist  = [dict(running)]
-    per_x = (x_final - 1) / max(len(ev), 1)
-    per_z = (z_final - 1) / max(len(ev), 1)
-
+    ev_w=sum(_CAT_W.get(e["category"],1.0) for e in ev)
+    adv_w=sum(_CAT_W.get(e["category"],1.0) for e in ev if _CAT_W.get(e["category"],0)>=3.0)
+    total_dl=len(dls); done_dl=sum(1 for d in dls if d["completed"])
+    over=sum(1 for d in dls if not d["completed"] and d["due_date"] and d["due_date"]<__import__("datetime").date.today().isoformat())
+    y_final=5 if not total_dl else _clamp(max(0.0,(done_dl/total_dl)*9-over*0.5)) if (done_dl/total_dl)*9-over*0.5>=1 else 1
+    x_final=_s9(ev_w,_EV_CEIL); z_final=_s9(adv_w,_ADV_CEIL)
+    running={"x":1,"y":y_final,"z":1}; chain=[]; hist=[dict(running)]
+    per_x=(x_final-1)/max(len(ev),1); per_z=(z_final-1)/max(len(ev),1)
     for e in ev:
-        cat = e["category"] if hasattr(e, "__getitem__") else e[3]
-        w   = _CAT_W.get(cat, 1.0)
-        dx  = per_x * (w / 1.0)
-        dz  = per_z * (w / 1.0) if w >= 3.0 else 0.0
-        ns  = _transition(running, {"x": dx, "y": 0.0, "z": dz})
-        chain.append({
-            "exhibit_id":     e["id"] if hasattr(e, "__getitem__") else e[0],
-            "exhibit_number": e["exhibit_number"] if hasattr(e, "__getitem__") else e[1] or "unnum",
-            "category":       cat or "General",
-            "weight":         w,
-            "event_date":     e["event_date"] if hasattr(e, "__getitem__") else e[4] or "undated",
-            "source":         e["source"] if hasattr(e, "__getitem__") else e[5] or "manual",
-            "delta":          {"x": round(dx, 4), "y": 0.0, "z": round(dz, 4)},
-            "state_after":    dict(ns),
-        })
-        hist.append(dict(ns))
-        running = ns
+        w=_CAT_W.get(e["category"],1.0)
+        dx=per_x*(w/1.0); dz=per_z*(w/1.0) if w>=3.0 else 0.0
+        ns=_transition(running,{"x":dx,"y":0.0,"z":dz})
+        chain.append({"exhibit_id":e["id"],"exhibit_number":e["exhibit_number"] or "unnum",
+                      "category":e["category"] or "General","weight":w,
+                      "event_date":e["event_date"] or "undated","source":e["source"] or "manual",
+                      "delta":{"x":round(dx,4),"y":0.0,"z":round(dz,4)},"state_after":dict(ns)})
+        hist.append(dict(ns)); running=ns
+    fs={"x":x_final,"y":y_final,"z":z_final}
+    return {"state":fs,"inputs":{"evidence_count":len(ev),"ev_weight_sum":round(ev_w,4),
+            "adv_weight_sum":round(adv_w,4),"total_deadlines":total_dl,
+            "done_deadlines":done_dl,"overdue_deadlines":over},"deltas":chain,"hash":_hash_states(hist)}
 
-    fs = {"x": x_final, "y": y_final, "z": z_final}
-    return {
-        "state": fs,
-        "inputs": {
-            "evidence_count":   len(ev),
-            "ev_weight_sum":    round(ev_w, 4),
-            "adv_weight_sum":   round(adv_w, 4),
-            "total_deadlines":  total_dl,
-            "done_deadlines":   done_dl,
-            "overdue_deadlines": over,
-        },
-        "deltas": chain,
-        "hash":   _hash_states(hist),
-    }
+def log_audit_event(case_id,action_type,ai_call_type,state_snapshot,prompt_inputs,trace_hash):
+    conn=get_db()
+    st=state_snapshot["state"]
+    conn.execute("INSERT INTO audit_log (case_id,action_type,ai_call_type,state_x,state_y,state_z,trace_hash,state_snapshot_json,prompt_inputs_json) VALUES (?,?,?,?,?,?,?,?,?)",
+        (case_id,action_type,ai_call_type,st["x"],st["y"],st["z"],trace_hash,
+         json.dumps(state_snapshot),json.dumps(prompt_inputs)))
+    conn.commit(); conn.close()
 
-
-def log_audit_event(case_id, action_type, ai_call_type, state_snapshot, prompt_inputs, trace_hash):
-    conn = get_db()
-    st = state_snapshot["state"]
-    conn.execute(
-        "INSERT INTO audit_log (case_id,action_type,ai_call_type,state_x,state_y,state_z,"
-        "trace_hash,state_snapshot_json,prompt_inputs_json) VALUES (?,?,?,?,?,?,?,?,?)",
-        (case_id, action_type, ai_call_type, st["x"], st["y"], st["z"],
-         trace_hash, json.dumps(state_snapshot), json.dumps(prompt_inputs))
-    )
-    conn.commit()
-    conn.close()
+def verify_audit_entry(audit_id):
+    conn=get_db(); row=conn.execute("SELECT * FROM audit_log WHERE id=?",(audit_id,)).fetchone(); conn.close()
+    if not row: return {"error":"not found"}
+    stored=row["trace_hash"]; live=compute_case_state(row["case_id"]); recomp=live["hash"]
+    match=stored==recomp
+    return {"verified":match,"audit_id":audit_id,"stored_hash":stored,"recomputed_hash":recomp,
+            "stored_state":json.loads(row["state_snapshot_json"])["state"],"live_state":live["state"],
+            "recorded_at":row["created_at"],"action_type":row["action_type"],
+            "note":"MATCH â€” case state is unchanged since this AI call was made." if match
+                   else "MISMATCH â€” evidence or deadlines changed after this AI call."}
 
 
-def _keyword_relevance(query: str, text: str) -> int:
-    stop = {"the","a","an","is","in","of","to","and","or","for","that","was","it","on","at",
-            "be","with","as","by"}
-    q_words = {w.lower() for w in re.findall(r'\w+', query) if len(w) > 3 and w.lower() not in stop}
-    t_words = {w.lower() for w in re.findall(r'\w+', text) if len(w) > 3 and w.lower() not in stop}
-    return len(q_words & t_words)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# DATABASE
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-
-
-# ── Constitutional Rights Reference ───────────────────────────────────────────
-CONSTITUTIONAL_RIGHTS = {
-    "Gatekeeping": [
-        {"amendment": "14th Amendment — Due Process", "plain": "Parents have a fundamental constitutional right to custody and care of their children. Interference with court-ordered parenting time may constitute a due process violation.", "case_law": "Troxel v. Granville, 530 U.S. 57 (2000)"},
-        {"amendment": "1st Amendment — Freedom of Association", "plain": "The parent-child bond is a protected associational right that cannot be severed without compelling justification.", "case_law": "Prince v. Massachusetts, 321 U.S. 158 (1944)"},
-    ],
-    "Parental Alienation": [
-        {"amendment": "14th Amendment — Due Process & Equal Protection", "plain": "Systematic alienation of a child from a parent infringes the fundamental liberty interest in family integrity.", "case_law": "Troxel v. Granville, 530 U.S. 57 (2000)"},
-    ],
-    "Threats": [
-        {"amendment": "1st Amendment — True Threats Doctrine", "plain": "The First Amendment does not protect true threats — serious expressions of intent to commit unlawful violence. Threats to take children or cause harm fall outside First Amendment protection.", "case_law": "Virginia v. Black, 538 U.S. 343 (2003)"},
-        {"amendment": "14th Amendment — Equal Protection", "plain": "Threats made on the basis of gender or other protected class in a domestic context implicate equal protection principles.", "case_law": "United States v. Morrison, 529 U.S. 598 (2000)"},
-    ],
-    "Harassment": [
-        {"amendment": "4th Amendment — Right to Privacy", "plain": "Repeated unwanted contact, surveillance, and intrusion into your home or workplace may violate your constitutional privacy rights.", "case_law": "Carpenter v. United States, 585 U.S. 296 (2018)"},
-    ],
-    "Privacy Violation": [
-        {"amendment": "4th Amendment — Search and Seizure", "plain": "Accessing your phone, email, or accounts without consent; installing tracking software; or recording you without permission violates constitutional privacy rights and federal wiretapping statutes (18 U.S.C. § 2511).", "case_law": "Katz v. United States, 389 U.S. 347 (1967)"},
-    ],
-    "Violation of Order": [
-        {"amendment": "14th Amendment — Due Process", "plain": "Your right to enforcement of a valid court order is a due process right. Willful violation exposes the violating party to contempt sanctions.", "case_law": "United States v. United Mine Workers, 330 U.S. 258 (1947)"},
-    ],
-    "Financial Abuse": [
-        {"amendment": "14th Amendment — Property Rights", "plain": "Marital property and support obligations are property rights protected by due process. Hiding assets or refusing court-ordered support may constitute a deprivation of constitutionally protected property.", "case_law": "Boddie v. Connecticut, 401 U.S. 371 (1971)"},
-    ],
-    "Physical Abuse": [
-        {"amendment": "14th Amendment — Substantive Due Process", "plain": "You have a fundamental liberty interest in your own bodily integrity. Physical abuse is a direct constitutional violation.", "case_law": "Washington v. Glucksberg, 521 U.S. 702 (1997)"},
-        {"amendment": "4th Amendment — Seizure of Person", "plain": "Physical assault constitutes an unlawful seizure of your person under 4th Amendment principles.", "case_law": "Tennessee v. Garner, 471 U.S. 1 (1985)"},
-    ],
-    "Coercive Control": [
-        {"amendment": "13th Amendment — Involuntary Servitude", "plain": "In extreme cases, using force or psychological manipulation to dominate another person’s daily life has been argued to implicate the 13th Amendment’s prohibition on involuntary servitude.", "case_law": "United States v. Kozminski, 487 U.S. 931 (1988)"},
-        {"amendment": "14th Amendment — Liberty Interest", "plain": "Freedom of movement, freedom to work, and freedom to associate are liberty interests the 14th Amendment protects.", "case_law": "Obergefell v. Hodges, 576 U.S. 644 (2015)"},
-    ],
-    "Relocation": [
-        {"amendment": "14th Amendment — Due Process", "plain": "Relocating children out of state without court approval violates the non-relocating parent’s due process rights and may constitute custodial interference under state law.", "case_law": "Troxel v. Granville, 530 U.S. 57 (2000)"},
-        {"amendment": "Full Faith and Credit Clause — Article IV", "plain": "Custody orders issued in one state must be honored by all other states. A parent who flees to evade a custody order cannot relitigate custody elsewhere.", "case_law": "Parental Kidnapping Prevention Act, 28 U.S.C. § 1738A"},
-    ],
-    "False Allegations": [
-        {"amendment": "14th Amendment — Due Process & Liberty", "plain": "False allegations in judicial proceedings that result in loss of custody or liberty implicate your 14th Amendment due process rights. You have the right to confront evidence against you.", "case_law": "Mathews v. Eldridge, 424 U.S. 319 (1976)"},
-        {"amendment": "6th Amendment — Right to Confront", "plain": "In any criminal proceeding arising from false allegations, you have the constitutional right to confront your accuser and cross-examine witnesses.", "case_law": "Crawford v. Washington, 541 U.S. 36 (2004)"},
-    ],
-    "Documentation / Evidence Tampering": [
-        {"amendment": "5th Amendment — Due Process", "plain": "Tampering with evidence or committing perjury violates your right to a fair proceeding. Courts may impose sanctions or contempt findings against a party who destroys evidence.", "case_law": "Spoliation doctrine; 18 U.S.C. § 1519"},
-    ],
-    "Child Statement": [
-        {"amendment": "6th Amendment — Confrontation Clause", "plain": "Statements made by children used in legal proceedings may implicate the Confrontation Clause. Courts apply special rules to child testimony in custody and abuse proceedings.", "case_law": "Maryland v. Craig, 497 U.S. 836 (1990)"},
-    ],
-    "Emotional Abuse": [
-        {"amendment": "14th Amendment — Substantive Due Process", "plain": "Psychological harm inflicted on a parent or child implicates substantive due process protections of personal dignity and family integrity.", "case_law": "Troxel v. Granville, 530 U.S. 57 (2000)"},
-    ],
-    "_case_type": {
-        "custody":          ["14th Amend. — Due Process (parental rights)", "1st Amend. — Freedom of Association", "Full Faith & Credit — Art. IV"],
-        "divorce":          ["14th Amend. — Property Rights", "14th Amend. — Equal Protection", "5th Amend. — Self-Incrimination"],
-        "domestic_violence":["14th Amend. — Bodily Integrity", "4th Amend. — Privacy", "13th Amend. — Involuntary Servitude", "1st Amend. — True Threats"],
-        "civil_rights":     ["1st Amend.", "4th Amend.", "5th Amend.", "14th Amend."],
-    },
-}
-
-US_CONSTITUTION_AMENDMENTS = {
-    1:  "Congress shall make no law respecting an establishment of religion, or prohibiting the free exercise thereof; or abridging the freedom of speech, or of the press; or the right of the people peaceably to assemble, and to petition the Government for a redress of grievances.",
-    4:  "The right of the people to be secure in their persons, houses, papers, and effects, against unreasonable searches and seizures, shall not be violated, and no Warrants shall issue, but upon probable cause, supported by Oath or affirmation, and particularly describing the place to be searched, and the persons or things to be seized.",
-    5:  "No person shall be held to answer for a capital, or otherwise infamous crime, unless on a presentment or indictment of a Grand Jury, except in cases arising in the land or naval forces, or in the Militia, when in actual service in time of War or public danger; nor shall any person be subject for the same offence to be twice put in jeopardy of life or limb; nor shall be compelled in any criminal case to be a witness against himself, nor be deprived of life, liberty, or property, without due process of law; nor shall private property be taken for public use, without just compensation.",
-    6:  "In all criminal prosecutions, the accused shall enjoy the right to a speedy and public trial, by an impartial jury of the State and district wherein the crime shall have been committed; to be informed of the nature and cause of the accusation; to be confronted with the witnesses against him; to have compulsory process for obtaining witnesses in his favor, and to have the Assistance of Counsel for his defence.",
-    13: "Neither slavery nor involuntary servitude, except as a punishment for crime whereof the party shall have been duly convicted, shall exist within the United States, or any place subject to their jurisdiction.",
-    14: "All persons born or naturalized in the United States, and subject to the jurisdiction thereof, are citizens of the United States and of the State wherein they reside. No State shall make or enforce any law which shall abridge the privileges or immunities of citizens of the United States; nor shall any State deprive any person of life, liberty, or property, without due process of law; nor deny to any person within its jurisdiction the equal protection of the laws.",
-}
-
-def get_constitutional_context(confirmed_categories, case_type=""):
-    seen = set()
-    blocks = []
-    for cat in confirmed_categories:
-        for right in CONSTITUTIONAL_RIGHTS.get(cat, []):
-            key = right["amendment"]
-            if key not in seen:
-                seen.add(key)
-                blocks.append(f"  {right['amendment']}\n  {right['plain']}\n  Key case: {right.get('case_law','N/A')}")
-    ct_key = (case_type or "").lower().replace(" ","_").replace("-","_")
-    for label in CONSTITUTIONAL_RIGHTS.get("_case_type", {}).get(ct_key, []):
-        if label not in seen:
-            seen.add(label)
-            blocks.append(f"  {label}")
-    if not blocks:
-        return ""
-    return "CONSTITUTIONAL RIGHTS IMPLICATED\n" + "\n\n".join(blocks)
-
-
-
-def build_case_system(case_id, user_query=""):
-    conn = get_db()
-    case    = conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
-    parties = conn.execute("SELECT * FROM parties WHERE case_id=?", (case_id,)).fetchall()
-
-    _WEIGHT = {label: w for label, w, _ in
-               [("Gatekeeping",5.0,None),("Parental Alienation",4.0,None),
-                ("Stonewalling",3.0,None),("Threats",5.0,None),("Harassment",4.0,None),
-                ("Violation of Order",5.0,None),("Financial",4.0,None),
-                ("Emotional Abuse",2.0,None),("Neglect / Safety",2.0,None),
-                ("Substance Concern",2.0,None),("Child Statement",1.0,None),
-                ("Relocation",5.0,None)]}
-
-    all_ev = conn.execute(
-        "SELECT exhibit_number,content,category,event_date FROM evidence "
-        "WHERE case_id=? AND confirmed=1 AND (is_deleted IS NULL OR is_deleted=0) "
-        "ORDER BY event_date ASC",
-        (case_id,)
-    ).fetchall()
-
-    def _score(r):
-        cat  = r["category"] if hasattr(r, "__getitem__") else r[2]
-        cont = r["content"]  if hasattr(r, "__getitem__") else r[1]
-        base = _WEIGHT.get(cat, 0)
-        kw   = _keyword_relevance(user_query, cont or "") if user_query else 0
-        return base + kw * 0.5
-
-    evidence  = sorted(all_ev, key=_score, reverse=True)[:30]
-    evidence  = sorted(evidence, key=lambda r: (r["event_date"] if hasattr(r,"__getitem__") else r[3]) or "")
-    deadlines = conn.execute(
-        "SELECT due_date,title FROM deadlines WHERE case_id=? AND completed=0 ORDER BY due_date ASC LIMIT 10",
-        (case_id,)
-    ).fetchall()
-    conn.close()
-
-    if not case:
-        return ("", None)
-
-    c = dict(case)
-    ev_text = "\n".join([
-        f"  [{(e['exhibit_number'] if hasattr(e,'__getitem__') else e[0]) or 'unnum'}] "
-        f"[{(e['event_date'] if hasattr(e,'__getitem__') else e[3]) or 'undated'}] "
-        f"({(e['category'] if hasattr(e,'__getitem__') else e[2])}): "
-        f"{((e['content'] if hasattr(e,'__getitem__') else e[1]) or '')[:250]}"
-        for e in evidence
-    ]) or "  None confirmed yet."
-
-    dl_text = "\n".join([
-        f"  {(d['due_date'] if hasattr(d,'__getitem__') else d[0])}: "
-        f"{(d['title'] if hasattr(d,'__getitem__') else d[1])}"
-        for d in deadlines
-    ]) or "  None."
-
-    party_text = "\n".join([
-        f"  {p['role'] if hasattr(p,'__getitem__') else p[1]}: "
-        f"{p['name'] if hasattr(p,'__getitem__') else p[0]}"
-        + (f" (atty: {p['attorney'] if hasattr(p,'__getitem__') else ''})" if
-           (p['attorney'] if hasattr(p,'__getitem__') else '') else "")
-        for p in parties
-    ]) or "  None entered."
-
-    jur_block = jurisdiction_statute_block(c.get("jurisdiction", ""))
-
-    system = f"""You are SynJuris, a plain-language legal assistant helping a pro se litigant.
-
-CASE FILE
-  Title: {c['title']}
-  Type: {c.get('case_type')}
-  {jur_block}
-  Court: {c.get('court_name') or 'not set'}
-  Case #: {c.get('case_number') or 'not set'}
-  Hearing date: {c.get('hearing_date') or 'not set'}
-  Goals: {c.get('goals') or 'not stated'}
-
-PARTIES
-{party_text}
-
-CONFIRMED EVIDENCE ({len(evidence)} items)
-{ev_text}
-
-UPCOMING DEADLINES
-{dl_text}
-
-YOUR RULES:
-1. Always speak in plain, clear English. Explain any legal term the moment you use it.
-2. You are NOT a lawyer. Always note this and recommend consulting one for final decisions.
-3. When explaining a law, cite the specific statute AND explain what it means practically.
-4. Be warm and empathetic. These are people in stressful, often frightening situations.
-5. When asked to draft a document, produce a complete draft with [BRACKET PLACEHOLDERS].
-6. Never invent statutes or case law. If unsure of a statute number, say so.
-7. When discussing hearing prep, be specific: what to say, what NOT to say.
-8. If someone describes domestic violence, always provide safety resources first.
-
-CONSTITUTIONAL GROUNDING: When relevant, cite specific constitutional amendments. Ground every legal argument in constitutional principles where applicable. Explain rights in plain language."""
-
-    confirmed_cats = list({(e['category'] if hasattr(e,'__getitem__') else e[2]) for e in evidence if (e['category'] if hasattr(e,'__getitem__') else e[2])})
-    constitutional_block = get_constitutional_context(confirmed_cats, c.get('case_type',''))
-    if constitutional_block:
-        system += "\n\n" + constitutional_block
-
-    snapshot = compute_case_state(case_id)
-    st = snapshot["state"]
-    inp = snapshot["inputs"]
-    state_block = (
-        f"  Evidence Strength    (x={st['x']}/9): {inp['evidence_count']} confirmed exhibits\n"
-        f"  Procedural Health    (y={st['y']}/9): {inp['done_deadlines']}/{inp['total_deadlines']} deadlines met\n"
-        f"  Adversarial Pressure (z={st['z']}/9): pattern weight {inp['adv_weight_sum']}\n"
-        f"  State Hash: {snapshot['hash'][:16]}…"
-    )
-    system += "\n\nCASE DYNAMICS STATE\n" + state_block
-
-    meta = {
-        "snapshot": snapshot,
-        "prompt_inputs": {"case_id": case_id, "state": st, "trace_hash": snapshot["hash"]}
-    }
-    return system, meta
-
-
-def verify_citations_in_text(text: str) -> list:
-    """CourtListener citation verification (preserved from v1)."""
-    _CITATION_RE = re.compile(
-        r'\b(\d+)\s+(U\.?S\.?|F\.?\d*d?|S\.?\s*Ct\.?|F\.?\s*Supp\.?\s*\d*d?|'
-        r'[A-Z][a-z]+\.?\s*[A-Z]?[a-z]*\.?)\s+(\d+)'
-        r'(?:\s*\(\w[^)]*\d{4}\))?',
-        re.IGNORECASE
-    )
-    seen, results = set(), []
-    _CL_API = "https://www.courtlistener.com/api/rest/v4/search/"
-    for m in _CITATION_RE.finditer(text):
-        cit = m.group(0).strip()
-        if cit in seen: continue
-        seen.add(cit)
-        result = {"citation": cit, "found": False, "url": None, "case_name": None, "warning": None}
-        try:
-            params = urllib.parse.urlencode({"q": f'"{cit}"', "type": "o", "format": "json"})
-            req = urllib.request.Request(f"{_CL_API}?{params}",
-                headers={"User-Agent": f"SynJuris/{VERSION}"})
-            with urllib.request.urlopen(req, timeout=6) as r:
-                data = json.loads(r.read())
-            if data.get("count", 0) > 0:
-                first = data["results"][0]
-                result["found"]     = True
-                result["case_name"] = first.get("caseName", "")
-                result["url"]       = f"https://www.courtlistener.com{first['absolute_url']}" \
-                    if first.get("absolute_url") else None
-            else:
-                result["warning"] = f"'{cit}' not found in CourtListener — verify before filing."
-        except Exception as e:
-            result["warning"] = f"Citation check unavailable: {e}"
-        results.append(result)
-    return results
-
-
-# ── DB Init (v2 — adds Merkle and embedding schemas) ─────────────────────────
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 def init_db():
-    """Initialize database with all v1 + v2 schemas."""
     conn = get_db()
-
-    # ── V1 schema (preserved exactly) ────────────────────────────────────────
-   # Define the schema script as a variable first
-    schema_sql = """
+    conn.executescript("""
     CREATE TABLE IF NOT EXISTS schema_version (
         version INTEGER PRIMARY KEY,
-        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS cases (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL, case_type TEXT, jurisdiction TEXT,
-        court_name TEXT, case_number TEXT, filing_deadline TEXT,
-        hearing_date TEXT, goals TEXT, notes TEXT,
-        user_id INTEGER, is_deleted INTEGER DEFAULT 0, deleted_at TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        title TEXT NOT NULL,
+        case_type TEXT,
+        jurisdiction TEXT,
+        court_name TEXT,
+        case_number TEXT,
+        filing_deadline TEXT,
+        hearing_date TEXT,
+        goals TEXT,
+        notes TEXT,
+        is_deleted INTEGER DEFAULT 0,
+        deleted_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS parties (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL, role TEXT, case_id INTEGER,
-        FOREIGN KEY (case_id) REFERENCES cases (id)
+        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+        name TEXT, role TEXT, contact TEXT, attorney TEXT, notes TEXT
     );
-    CREATE TABLE IF NOT EXISTS login_attempts (
+    CREATE TABLE IF NOT EXISTS evidence (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+        exhibit_number TEXT,
+        content TEXT,
+        source TEXT,
+        event_date TEXT,
+        category TEXT,
+        confirmed INTEGER DEFAULT 0,
+        notes TEXT,
+        file_path TEXT,
+        file_type TEXT,
+        original_filename TEXT,
+        is_deleted INTEGER DEFAULT 0,
+        deleted_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS documents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+        title TEXT, doc_type TEXT, content TEXT,
+        version INTEGER DEFAULT 1,
+        parent_id INTEGER,
+        is_deleted INTEGER DEFAULT 0,
+        deleted_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS timeline_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+        event_date TEXT, title TEXT, description TEXT,
+        category TEXT, importance TEXT DEFAULT 'normal',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS financials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+        entry_date TEXT, description TEXT,
+        amount REAL, category TEXT, direction TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS deadlines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+        due_date TEXT, title TEXT, description TEXT,
+        completed INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS chat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+        role TEXT, content TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+        action_type TEXT NOT NULL, ai_call_type TEXT,
+        state_x INTEGER, state_y INTEGER, state_z INTEGER,
+        trace_hash TEXT NOT NULL,
+        state_snapshot_json TEXT, prompt_inputs_json TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        expires_at DATETIME NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS auth_attempts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT NOT NULL,
-        attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         success INTEGER DEFAULT 0
     );
-    CREATE TABLE IF NOT EXISTS citation_cache (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        citation TEXT NOT NULL UNIQUE,
-        result_json TEXT,
-        verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """
+    """)
+    # â”€â”€ Schema-version-based migrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    current = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 0
 
-    if USE_POSTGRES:
-        # Render/PostgreSQL logic: split and execute each statement 
-        with conn.cursor() as cur:
-            for statement in schema_sql.split(';'):
-                if statement.strip():
-                    # Remove AUTOINCREMENT for PostgreSQL compatibility
-                    clean_sql = statement.replace("AUTOINCREMENT", "")
-                    cur.execute(clean_sql)
-    else:
-        # Local/SQLite logic: keep original executescript [cite: 25, 27]
-        conn.executescript(schema_sql)
-    conn.commit()
+    if current < 1:
+        # Migration 1: add file attachment columns to evidence
+        existing = [r[1] for r in conn.execute("PRAGMA table_info(evidence)").fetchall()]
+        if "file_path" not in existing:
+            conn.execute("ALTER TABLE evidence ADD COLUMN file_path TEXT")
+        if "file_type" not in existing:
+            conn.execute("ALTER TABLE evidence ADD COLUMN file_type TEXT")
+        conn.execute("INSERT INTO schema_version(version) VALUES(1)")
 
-    # ── V2 schema additions ───────────────────────────────────────────────────
-    if HAS_MERKLE:
-        init_merkle_schema(conn)
+    if current < 2:
+        # Migration 2: create audit_log if it predates the CREATE IF NOT EXISTS above
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if "audit_log" not in tables:
+            conn.execute("""CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+                action_type TEXT NOT NULL, ai_call_type TEXT,
+                state_x INTEGER, state_y INTEGER, state_z INTEGER,
+                trace_hash TEXT NOT NULL, state_snapshot_json TEXT,
+                prompt_inputs_json TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+        conn.execute("INSERT INTO schema_version(version) VALUES(2)")
 
-    if HAS_SEMANTIC:
-        try:
-            from pattern_engine import init_embedding_schema
-            init_embedding_schema(conn)
-        except Exception:
-            pass
+    if current < 3:
+        # Migration 3: add user_id to cases
+        existing_cases = [r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()]
+        if "user_id" not in existing_cases:
+            conn.execute("ALTER TABLE cases ADD COLUMN user_id INTEGER")
+        conn.execute("INSERT INTO schema_version(version) VALUES(3)")
 
-    # V2 job persistence table
- # V2 job persistence table
-        if USE_POSTGRES:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS generation_jobs (
-                        job_id TEXT PRIMARY KEY,
-                        case_id INTEGER,
-                        doc_type TEXT,
-                        state TEXT DEFAULT 'pending',
-                        evidence_hash TEXT,
-                        doc_id INTEGER,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        completed_at TIMESTAMP
-                    )
-                """)
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS waitlist (
-                        id SERIAL PRIMARY KEY,
-                        email TEXT NOT NULL UNIQUE,
-                        platform TEXT DEFAULT 'desktop',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-            conn.commit()
-        else:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS generation_jobs (
-                    job_id TEXT PRIMARY KEY,
-                    case_id INTEGER,
-                    doc_type TEXT,
-                    state TEXT DEFAULT 'pending',
-                    evidence_hash TEXT,
-                    doc_id INTEGER,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    completed_at DATETIME
-                );
-                CREATE TABLE IF NOT EXISTS waitlist (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT NOT NULL UNIQUE,
-                    platform TEXT DEFAULT 'desktop',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-        conn.commit()
-        conn.close()
-    conn.commit()
-    conn.close()
+    if current < 4:
+        # Migration 4: soft delete + original filename columns
+        ev_cols = [r[1] for r in conn.execute("PRAGMA table_info(evidence)").fetchall()]
+        if "original_filename" not in ev_cols:
+            conn.execute("ALTER TABLE evidence ADD COLUMN original_filename TEXT")
+        if "is_deleted" not in ev_cols:
+            conn.execute("ALTER TABLE evidence ADD COLUMN is_deleted INTEGER DEFAULT 0")
+        if "deleted_at" not in ev_cols:
+            conn.execute("ALTER TABLE evidence ADD COLUMN deleted_at DATETIME")
+        case_cols = [r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()]
+        if "is_deleted" not in case_cols:
+            conn.execute("ALTER TABLE cases ADD COLUMN is_deleted INTEGER DEFAULT 0")
+        if "deleted_at" not in case_cols:
+            conn.execute("ALTER TABLE cases ADD COLUMN deleted_at DATETIME")
+        doc_cols = [r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()]
+        if "is_deleted" not in doc_cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN is_deleted INTEGER DEFAULT 0")
+        if "deleted_at" not in doc_cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN deleted_at DATETIME")
+        if "version" not in doc_cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN version INTEGER DEFAULT 1")
+        if "parent_id" not in doc_cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN parent_id INTEGER")
+        conn.execute("INSERT INTO schema_version(version) VALUES(4)")
+
+    if current < 5:
+        # Migration 5: session expiry and auth rate-limit table
+        sess_cols = [r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+        if "expires_at" not in sess_cols:
+            # Set existing sessions to expire 30 days from now
+            conn.execute("ALTER TABLE sessions ADD COLUMN expires_at DATETIME")
+            conn.execute("UPDATE sessions SET expires_at = datetime('now', '+30 days') WHERE expires_at IS NULL")
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if "auth_attempts" not in tables:
+            conn.execute("""CREATE TABLE auth_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL,
+                attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                success INTEGER DEFAULT 0)""")
+        conn.execute("INSERT INTO schema_version(version) VALUES(5)")
+
+    if current < 6:
+        # Migration 6: attorney tier, portal tokens, conflict log, time entries
+        user_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+        if "tier" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN tier TEXT DEFAULT 'pro_se'")
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if "portal_tokens" not in tables:
+            conn.execute("""CREATE TABLE portal_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT NOT NULL UNIQUE,
+                case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+                attorney_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                label TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME)""")
+        if "portal_evidence" not in tables:
+            conn.execute("""CREATE TABLE portal_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+                portal_token_id INTEGER REFERENCES portal_tokens(id) ON DELETE CASCADE,
+                content TEXT, source TEXT, event_date TEXT, category TEXT,
+                attorney_note TEXT, approved INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+        if "conflict_checks" not in tables:
+            conn.execute("""CREATE TABLE conflict_checks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                case_id INTEGER REFERENCES cases(id),
+                party_names_json TEXT,
+                result TEXT,
+                checked_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+        if "time_entries" not in tables:
+            conn.execute("""CREATE TABLE time_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                description TEXT, hours REAL DEFAULT 0.0,
+                billable INTEGER DEFAULT 1, exported INTEGER DEFAULT 0,
+                source TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+        conn.execute("INSERT INTO schema_version(version) VALUES(6)")
+
+    if current < 7:
+        # Migration 7: CourtListener citation cache + backup metadata
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        if "citation_cache" not in tables:
+            conn.execute("""CREATE TABLE citation_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                citation TEXT NOT NULL UNIQUE,
+                result_json TEXT,
+                verified_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+        conn.execute("INSERT INTO schema_version(version) VALUES(7)")
+
+    conn.commit(); conn.close()
     os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-    # Local mode synthetic user
-    if LOCAL_MODE:
-        conn = get_db()
-        try:
-            conn.execute(
-                "INSERT OR IGNORE INTO users (id, email, password_hash, tier) "
-                "VALUES (1, 'local@localhost', 'local_no_password', 'pro_se')"
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# JURISDICTION RULES
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Maps state names/abbreviations to their custody interference statutes.
+# Used by the AI system prompt and document generator so every reference
+# to law cites the actual statute for that user's state.
+# Add states as needed â€” structure: { display_name: { ... } }
+
+JURISDICTION_LAW = {
+    # â”€â”€ CUSTODY / INTERFERENCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    "Alabama":        {"custody": "Ala. Code Â§ 30-3-1", "support": "Ala. Code Â§ 30-3-110", "dv": "Ala. Code Â§ 30-5-1"},
+    "Alaska":         {"custody": "Alaska Stat. Â§ 25.20.060", "support": "Alaska Stat. Â§ 25.27.020", "dv": "Alaska Stat. Â§ 18.66.100"},
+    "Arizona":        {"custody": "A.R.S. Â§ 25-403", "support": "A.R.S. Â§ 25-501", "dv": "A.R.S. Â§ 13-3601"},
+    "Arkansas":       {"custody": "Ark. Code Â§ 9-13-101", "support": "Ark. Code Â§ 9-14-201", "dv": "Ark. Code Â§ 9-15-201"},
+    "California":     {"custody": "Cal. Fam. Code Â§ 3020", "support": "Cal. Fam. Code Â§ 4050", "dv": "Cal. Fam. Code Â§ 6200"},
+    "Colorado":       {"custody": "C.R.S. Â§ 14-10-124", "support": "C.R.S. Â§ 14-14-104", "dv": "C.R.S. Â§ 13-14-101"},
+    "Connecticut":    {"custody": "C.G.S. Â§ 46b-56", "support": "C.G.S. Â§ 46b-84", "dv": "C.G.S. Â§ 46b-15"},
+    "Delaware":       {"custody": "13 Del. C. Â§ 722", "support": "13 Del. C. Â§ 514", "dv": "10 Del. C. Â§ 1041"},
+    "Florida":        {"custody": "Fla. Stat. Â§ 61.13", "support": "Fla. Stat. Â§ 61.29", "dv": "Fla. Stat. Â§ 741.28"},
+    "Georgia":        {"custody": "O.C.G.A. Â§ 19-9-1", "support": "O.C.G.A. Â§ 19-6-15", "dv": "O.C.G.A. Â§ 19-13-1"},
+    "Hawaii":         {"custody": "HRS Â§ 571-46", "support": "HRS Â§ 576D-1", "dv": "HRS Â§ 586-1"},
+    "Idaho":          {"custody": "Idaho Code Â§ 32-717", "support": "Idaho Code Â§ 32-706", "dv": "Idaho Code Â§ 39-6301"},
+    "Illinois":       {"custody": "750 ILCS 5/602.5", "support": "750 ILCS 5/505", "dv": "750 ILCS 60/101"},
+    "Indiana":        {"custody": "I.C. Â§ 31-17-2-8", "support": "I.C. Â§ 31-16-6-1", "dv": "I.C. Â§ 34-26-5-1"},
+    "Iowa":           {"custody": "Iowa Code Â§ 598.41", "support": "Iowa Code Â§ 598.21B", "dv": "Iowa Code Â§ 236.2"},
+    "Kansas":         {"custody": "K.S.A. Â§ 23-3203", "support": "K.S.A. Â§ 23-3001", "dv": "K.S.A. Â§ 60-3101"},
+    "Kentucky":       {"custody": "KRS Â§ 403.270", "support": "KRS Â§ 403.212", "dv": "KRS Â§ 403.715"},
+    "Louisiana":      {"custody": "La. C.C. Art. 132", "support": "La. R.S. Â§ 9:315", "dv": "La. R.S. Â§ 46:2131"},
+    "Maine":          {"custody": "19-A M.R.S. Â§ 1653", "support": "19-A M.R.S. Â§ 2006", "dv": "19-A M.R.S. Â§ 4001"},
+    "Maryland":       {"custody": "Md. Code, FL Â§ 9-101", "support": "Md. Code, FL Â§ 12-201", "dv": "Md. Code, FL Â§ 4-501"},
+    "Massachusetts":  {"custody": "M.G.L. c.208 Â§ 31", "support": "M.G.L. c.208 Â§ 28", "dv": "M.G.L. c.209A Â§ 1"},
+    "Michigan":       {"custody": "MCL Â§ 722.23", "support": "MCL Â§ 552.451", "dv": "MCL Â§ 600.2950"},
+    "Minnesota":      {"custody": "Minn. Stat. Â§ 518.17", "support": "Minn. Stat. Â§ 518A.26", "dv": "Minn. Stat. Â§ 518B.01"},
+    "Mississippi":    {"custody": "Miss. Code Â§ 93-5-24", "support": "Miss. Code Â§ 93-9-1", "dv": "Miss. Code Â§ 93-21-1"},
+    "Missouri":       {"custody": "Mo. Rev. Stat. Â§ 452.375", "support": "Mo. Rev. Stat. Â§ 452.340", "dv": "Mo. Rev. Stat. Â§ 455.010"},
+    "Montana":        {"custody": "MCA Â§ 40-4-212", "support": "MCA Â§ 40-5-201", "dv": "MCA Â§ 40-15-101"},
+    "Nebraska":       {"custody": "Neb. Rev. Stat. Â§ 43-2923", "support": "Neb. Rev. Stat. Â§ 42-364", "dv": "Neb. Rev. Stat. Â§ 42-903"},
+    "Nevada":         {"custody": "NRS Â§ 125C.0035", "support": "NRS Â§ 125B.010", "dv": "NRS Â§ 33.018"},
+    "New Hampshire":  {"custody": "RSA Â§ 461-A:6", "support": "RSA Â§ 458-C:3", "dv": "RSA Â§ 173-B:1"},
+    "New Jersey":     {"custody": "N.J.S.A. Â§ 9:2-4", "support": "N.J.S.A. Â§ 2A:34-23", "dv": "N.J.S.A. Â§ 2C:25-17"},
+    "New Mexico":     {"custody": "NMSA Â§ 40-4-9.1", "support": "NMSA Â§ 40-4-11.1", "dv": "NMSA Â§ 40-13-1"},
+    "New York":       {"custody": "N.Y. Dom. Rel. Law Â§ 240", "support": "N.Y. Fam. Ct. Act Â§ 413", "dv": "N.Y. Fam. Ct. Act Â§ 812"},
+    "North Carolina": {"custody": "N.C.G.S. Â§ 50-13.2", "support": "N.C.G.S. Â§ 50-13.4", "dv": "N.C.G.S. Â§ 50B-1"},
+    "North Dakota":   {"custody": "N.D.C.C. Â§ 14-09-06.2", "support": "N.D.C.C. Â§ 14-09-09.7", "dv": "N.D.C.C. Â§ 14-07.1-01"},
+    "Ohio":           {"custody": "ORC Â§ 3109.04", "support": "ORC Â§ 3119.02", "dv": "ORC Â§ 3113.31"},
+    "Oklahoma":       {"custody": "43 O.S. Â§ 112", "support": "43 O.S. Â§ 118", "dv": "22 O.S. Â§ 60.1"},
+    "Oregon":         {"custody": "ORS Â§ 107.137", "support": "ORS Â§ 107.105", "dv": "ORS Â§ 107.700"},
+    "Pennsylvania":   {"custody": "23 Pa.C.S. Â§ 5328", "support": "23 Pa.C.S. Â§ 4322", "dv": "23 Pa.C.S. Â§ 6101"},
+    "Rhode Island":   {"custody": "R.I. Gen. Laws Â§ 15-5-16", "support": "R.I. Gen. Laws Â§ 15-5-16.2", "dv": "R.I. Gen. Laws Â§ 15-15-1"},
+    "South Carolina": {"custody": "S.C. Code Â§ 63-15-230", "support": "S.C. Code Â§ 63-17-470", "dv": "S.C. Code Â§ 20-4-20"},
+    "South Dakota":   {"custody": "SDCL Â§ 25-5-7.1", "support": "SDCL Â§ 25-7-6.2", "dv": "SDCL Â§ 25-10-1"},
+    "Tennessee":      {"custody": "TN Code Â§ 36-6-101", "support": "TN Code Â§ 36-5-101", "dv": "TN Code Â§ 36-3-601"},
+    "Texas":          {"custody": "Tex. Fam. Code Â§ 153.002", "support": "Tex. Fam. Code Â§ 154.001", "dv": "Tex. Fam. Code Â§ 71.004"},
+    "Utah":           {"custody": "Utah Code Â§ 30-3-10", "support": "Utah Code Â§ 78B-12-202", "dv": "Utah Code Â§ 77-36-1"},
+    "Vermont":        {"custody": "15 V.S.A. Â§ 665", "support": "15 V.S.A. Â§ 653", "dv": "15 V.S.A. Â§ 1101"},
+    "Virginia":       {"custody": "Va. Code Â§ 20-124.3", "support": "Va. Code Â§ 20-108.2", "dv": "Va. Code Â§ 16.1-228"},
+    "Washington":     {"custody": "RCW Â§ 26.09.187", "support": "RCW Â§ 26.19.020", "dv": "RCW Â§ 26.50.010"},
+    "West Virginia":  {"custody": "W. Va. Code Â§ 48-9-206", "support": "W. Va. Code Â§ 48-13-301", "dv": "W. Va. Code Â§ 48-27-202"},
+    "Wisconsin":      {"custody": "Wis. Stat. Â§ 767.41", "support": "Wis. Stat. Â§ 767.511", "dv": "Wis. Stat. Â§ 813.12"},
+    "Wyoming":        {"custody": "Wyo. Stat. Â§ 20-2-201", "support": "Wyo. Stat. Â§ 20-2-304", "dv": "Wyo. Stat. Â§ 35-21-102"},
+    "Washington D.C.":{"custody": "D.C. Code Â§ 16-914", "support": "D.C. Code Â§ 16-916", "dv": "D.C. Code Â§ 16-1001"},
+}
+
+# Common abbreviations / alternate spellings â†’ canonical name
+JURISDICTION_ALIASES = {
+    "al":"Alabama","ak":"Alaska","az":"Arizona","ar":"Arkansas","ca":"California",
+    "co":"Colorado","ct":"Connecticut","de":"Delaware","fl":"Florida","ga":"Georgia",
+    "hi":"Hawaii","id":"Idaho","il":"Illinois","in":"Indiana","ia":"Iowa","ks":"Kansas",
+    "ky":"Kentucky","la":"Louisiana","me":"Maine","md":"Maryland","ma":"Massachusetts",
+    "mi":"Michigan","mn":"Minnesota","ms":"Mississippi","mo":"Missouri","mt":"Montana",
+    "ne":"Nebraska","nv":"Nevada","nh":"New Hampshire","nj":"New Jersey","nm":"New Mexico",
+    "ny":"New York","nc":"North Carolina","nd":"North Dakota","oh":"Ohio","ok":"Oklahoma",
+    "or":"Oregon","pa":"Pennsylvania","ri":"Rhode Island","sc":"South Carolina",
+    "sd":"South Dakota","tn":"Tennessee","tx":"Texas","ut":"Utah","vt":"Vermont",
+    "va":"Virginia","wa":"Washington","wv":"West Virginia","wi":"Wisconsin","wy":"Wyoming",
+    "dc":"Washington D.C.","d.c.":"Washington D.C.",
+    # common misspellings / shorthand
+    "tenn":"Tennessee","tenn.":"Tennessee","calif":"California","calif.":"California",
+    "colo":"Colorado","colo.":"Colorado","conn":"Connecticut","conn.":"Connecticut",
+    "mass":"Massachusetts","mass.":"Massachusetts","mich":"Michigan","mich.":"Michigan",
+    "minn":"Minnesota","minn.":"Minnesota","penn":"Pennsylvania","penn.":"Pennsylvania",
+    "wisc":"Wisconsin","wisc.":"Wisconsin",
+}
+
+def resolve_jurisdiction(raw):
+    """Return canonical state name and its statute dict, or None if unknown."""
+    if not raw:
+        return None, {}
+    key = raw.strip().lower()
+    canonical = JURISDICTION_ALIASES.get(key) or next(
+        (k for k in JURISDICTION_LAW if k.lower() == key), None
+    )
+    if canonical:
+        return canonical, JURISDICTION_LAW.get(canonical, {})
+    # partial match â€” e.g. "middle district of tennessee"
+    for k in JURISDICTION_LAW:
+        if k.lower() in key:
+            return k, JURISDICTION_LAW[k]
+    return raw.title(), {}  # unknown state â€” return as-is, empty statutes
+
+def jurisdiction_statute_block(jurisdiction):
+    """Build the statute reference block injected into AI prompts."""
+    name, statutes = resolve_jurisdiction(jurisdiction)
+    if not statutes:
+        return f"Jurisdiction: {name}\n(Specific statute codes not available â€” describe general legal principles and encourage user to verify their state's laws.)"
+    lines = [f"Jurisdiction: {name}"]
+    if statutes.get("custody"):
+        lines.append(f"  Custody statute:   {statutes['custody']}")
+    if statutes.get("support"):
+        lines.append(f"  Support statute:   {statutes['support']}")
+    if statutes.get("dv"):
+        lines.append(f"  DV/protection:     {statutes['dv']}")
+    return "\n".join(lines)
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# PATTERN DETECTION
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#
+# Each entry: (category, severity_weight, regex)
+#
+# Severity weights:
+#   5.0 = Explicit statutory violation (gatekeeping, threats, order violation)
+#   4.0 = Strong behavioral indicator (alienation, harassment, financial abuse)
+#   3.0 = Communication barrier (stonewalling, blocking)
+#   2.0 = Concerning pattern (emotional abuse, neglect indicators)
+#   1.0 = Contextual flag (substance mention, child statement, general conflict)
+#
+# Philosophy: cast wide on detection, let the human confirm.
+# Better to flag something innocent than miss something important.
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+PATTERNS = [
+    # (category, severity_weight, regex)
+    # 5.0=explicit violation  4.0=strong indicator  3.0=comm barrier
+    # 2.0=concerning pattern  1.0=contextual flag
+
+    ("Gatekeeping", 5.0,
+     r"(won'?t\s+let\s+(him|her|me|them|you)"
+     r"|denied?\s+(visit|access|time|pickup|drop.?off|exchange)"
+     r"|prevent(ing|ed)?\s+(me|him|her|them)\s+(from\s+)?(see|visit|contact)"
+     r"|(can'?t|cannot|won'?t)\s+(see|have|pick\s*up|get)\s+(him|her|them|the\s*kids?|my\s*(son|daughter|child))"
+     r"|(cancel+ed?|call(ed)?\s*off|no.?show)\s*(the\s*)?(visit|exchange|pickup|drop.?off|parenting\s*time)"
+     r"|block(ed|ing)?\s*(access|contact|visitation|my\s*time)"
+     r"|not\s+(allow(ed|ing)|permit(ted|ting))\s+(me|him|her)\s+to\s+(see|visit|call|talk)"
+     r"|keep(ing|s)?\s+(him|her|them|the\s*kids?)\s+(from|away\s*from)\s+me"
+     r"|withhold(ing|ed)?\s+(the\s*)?(child(ren)?|kids?|son|daughter)"
+     r"|(refuse[sd]?|refus(es|ing))\s+to\s+(do\s+)?(exchange|transfer|drop.?off|pick.?up)"
+     r"|didn'?t\s+(bring|drop\s*off|pick\s*up|show\s*up\s*with)\s+(him|her|them|the\s*kids?)"
+     r"|(he|she)\s+(isn'?t|was\s+not|weren'?t)\s+(there|home|ready)\s+(for|at)\s*(the\s*)?(pickup|exchange|visit)"
+     r"|locked\s+(me\s*out|the\s*door)\s+(when|at\s*exchange)"
+     r"|interfere\S*\s+with\s+(my\s+)?(parenting|custody|visitation|time)"
+     r"|parenting\s+time\s+(denied|blocked|cancelled|refused)"
+     r"|(my|our)\s+(scheduled|court.?ordered)\s+(visit|time|exchange)\s+(was\s+)?(denied|cancelled|blocked)"
+     r"|not\s+home\s+(when\s+I|for\s+(the|my))\s+(pickup|exchange|drop)"
+     r"|wasn'?t\s+(there|home|ready)\s+for\s+(the\s+)?(pickup|exchange|visit)"
+     r"|not\s+(there|home)\s+when\s+I\s+(came|arrived|showed\s+up))"
+    ),
+
+    ("Parental Alienation", 4.0,
+     r"(alienat(e|ed|ing|ion)"
+     r"|(toxic|abusive|bad|dangerous|unfit)\s+(parent(ing)?|father|mother|dad|mom)"
+     r"|train(ing|ed)\s+(him|her|them)\s+(to|against)"
+     r"|(turn(ing|ed)|turns)\s+(him|her|them|the\s*kids?)\s+against"
+     r"|(poison(ing|ed)|brainwash(ing|ed))\s+(his|her|their)\s+mind"
+     r"|mak(ing|es)\s+(him|her|them)\s+(think|believe|say)\s+(I'?m|I\s+am|that\s+I)"
+     r"|told\s+(him|her|them)\s+(I|daddy|mommy|their\s+(dad|mom))\s+(am|is|was|were)\s+a[n]?\s+\w+"
+     r"|(bad.?mouth(ing|ed)|talk(ing|s)\s+(bad|trash|negatively))\s+(about\s+)?(me|their\s+(father|mother|dad|mom))"
+     r"|mak(ing|es)\s+adult\s+decisions"
+     r"|involv(ing|ed)\s+(him|her|them)\s+in\s+(our|the)\s+(adult|court|legal)\s+(issues?|problems?|fight)"
+     r"|(told|tell[s]?|telling)\s+(him|her|them)\s+(not\s+to|to\s+not)\s+(talk\s+to|call|text|contact)\s+me"
+     r"|coach(ing|ed|es)?\s+(him|her|them|the\s*kids?)\s+(on\s+)?(what\s+to|to)\s+say"
+     r"|(he|she|they)\s+(cried|doesn'?t\s+want|refused|is\s+scared)\s+to\s+(come|go|visit|see)"
+     r"|said\s+(I|their\s+(father|mother))\s+(don'?t|doesn'?t)\s+(love|care\s+about|want)\s+(them|him|her)"
+     r"|(calls?|refer\S*)\s+(me|their\s+(father|mother))\s+(a[n]?\s+)?(abuser|monster|predator|bad\s+person)"
+     r"|(won'?t|doesn'?t)\s+(let\s+them|allow\s+(him|her|them))\s+(talk\s+to|call|text|see)\s+me)"
+    ),
+
+    ("Stonewalling", 3.0,
+     r"(won'?t\s+respond"
+     r"|not\s+responding"
+     r"|(never|doesn'?t|don'?t|won'?t)\s+(respond|reply|answer|return)\s+(my\s+)?(call|text|message|email)s?"
+     r"|silent\s+treatment|giving\s+me\s+the\s+silent"
+     r"|done\s+(talking|communicating|dealing)\s+with\s+you"
+     r"|ignor(e|ed|es|ing)\s+(me|my\s+(calls?|texts?|messages?)|all\s+my)"
+     r"|block(ed|s|ing)?\s+(my\s+)?(number|calls?|texts?|messages?|emails?|phone)"
+     r"|blocked\s+(your|his|her|my)\s+(number|phone|contact)"
+     r"|left\s+(me\s+)?(on\s+)?(read|seen)"
+     r"|left\s+\S+\s+(on\s+)?(read|seen)"
+     r"|refuse[sd]?\s+to\s+(talk|speak|communicate|discuss|respond|reply)"
+     r"|(can'?t|cannot)\s+get\s+(a|any)\s+(response|reply|answer|hold\s+of)"
+     r"|(no\s+response|haven'?t\s+heard\s+back|heard\s+nothing)\s+(from\s+)?(him|her|them)"
+     r"|(hung\s+up|hang(s|ing)\s+up)\s+on\s+me"
+     r"|only\s+(communicat\S*|talk\S*|respond\S*)\s+through\s+(the\s+)?(lawyer|attorney|court)"
+     r"|goes\s+days?\s+without\s+(respond|reply|answer)"
+     r"|(unreachable|unresponsive|ghosting\s+me)"
+     r"|read\s+(my\s+)?(text|message)\s+and\s+(didn'?t|never)\s+(reply|respond)"
+     r"|seen\s+[0-9]+\s+(hour|day|minute)s?\s+ago\s+and\s+no\s+reply)"
+    ),
+
+    ("Threats", 5.0,
+     r"((take|taking|gonna\s+take|going\s+to\s+take)\s+(you|this)\s+to\s+court"
+     r"|(take|get|going\s+to\s+get|gonna\s+get)\s+(full|sole|primary)\s+custody"
+     r"|you'?ll\s+(never|not)\s+(see|have|get)\s+(him|her|them|the\s*kids?|your\s*(son|daughter|child\S*))"
+     r"|(call|going\s+to\s+call|gonna\s+call)\s+(the\s*)?(police|cops?|cps|dcs|dcf|child\s*protective|911)"
+     r"|(file|going\s+to\s+file)\s+a\s+(restraining|protective)\s+order"
+     r"|(file|filing|going\s+to\s+file)\s+(a\s+)?(tpo|opo|tro|emergency\s+order)"
+     r"|(have\s+you|get\s+you)\s+(arrested|locked\s+up|thrown\s+in\s+jail)"
+     r"|(I'?ll|I\s+will|going\s+to)\s+make\s+sure\s+you\s+(never|regret|pay)"
+     r"|(take|move|moving)\s+(him|her|them|the\s*kids?)\s+(away|out\s+of\s+state|where\s+you\s+can'?t)"
+     r"|(I'?ll|I\s+will|going\s+to|gonna)\s+(destroy|ruin|expose|report)\s+you"
+     r"|lawyer\s+(will|is\s+going\s+to)\s+(destroy|go\s+after|come\s+after|bury)"
+     r"|you'?re\s+going\s+to\s+(lose|regret|pay\s+for)\s+(this|everything)"
+     r"|(terminate|terminating)\s+your\s+(parental\s+rights|visitation|custody)"
+     r"|going\s+to\s+report\s+you\s+to\s+(cps|dcs|dcf|child\s*protective)"
+     r"|make\s+your\s+life\s+(hell|miserable|difficult)"
+     r"|(I\s+have|got)\s+screenshots?\s+of\s+everything)"
+    ),
+
+    ("Harassment", 4.0,
+     r"(show(ed|ing|s)?\s+up\s+(uninvited|unannounced|without\s+(notice|calling)|at\s+my\s+(house|work|job|school))"
+     r"|(follow(ed|ing|s)|tail(ed|ing)|track(ed|ing|s))\s+(me|my\s+(car|location))"
+     r"|(watching|stalking|spying\s+on)\s+me"
+     r"|(drove|driving|parked|sitting)\s+(by|past|outside|in\s+front\s+of)\s+my\s+(house|home|work|job)"
+     r"|won'?t\s+(leave\s+me\s+alone|stop\s+(calling|texting|contacting|messaging))"
+     r"|(constantly|non.?stop|all\s+the\s+time)\s+(call(ing|s)|text(ing|s)|messag(ing|es))\s+me"
+     r"|(blowing\s+up|flooding)\s+my\s+(phone|inbox|messages?)"
+     r"|contact(ing|ed)\s+my\s+(family|friends?|employer|coworkers?|boss|neighbors?)"
+     r"|show(ed|ing|s)?\s+up\s+at\s+(my\s+)?(work|job|school|church|gym)"
+     r"|(waited|waiting|sitting)\s+outside\s+(my|the)\s+(house|home|apartment|work|school)"
+     r"|sent\s+[0-9]+\s+(texts?|calls?|messages?)\s+(in\s+a\s+row|today|tonight|this\s+(morning|afternoon|evening)))"
+    ),
+
+    ("Violation of Order", 5.0,
+     r"(violat(e|ed|es|ing|ion)\s+(the\s+)?(court\s+order|parenting\s+plan|custody\s+agreement|order)"
+     r"|in\s+contempt"
+     r"|against\s+the\s+(court\s+order|order|parenting\s+plan|agreement)"
+     r"|(the\s+)?(court\s+order|parenting\s+plan|custody\s+agreement)\s+(says?|requires?|states?|orders?)"
+     r"|supposed\s+to\s+(return|bring|drop\s+off|pick\s+up|exchange)\s+(him|her|them|the\s*kids?)"
+     r"|required\s+(by\s+the\s+order|to)\s+(return|exchange|allow|provide)"
+     r"|(court.?ordered|order\s+requires?)\s+(visitation|custody|exchange|support\s+payment)"
+     r"|(didn'?t|doesn'?t|won'?t)\s+(follow|comply\s+with|abide\s+by)\s+the\s+(order|parenting\s+plan)"
+     r"|breaking\s+the\s+(court\s+order|parenting\s+plan|agreement|order)"
+     r"|held\s+in\s+contempt"
+     r"|file\s+for\s+contempt)"
+    ),
+
+    ("Financial", 4.0,
+     r"(child\s+support"
+     r"|alimony"
+     r"|spousal\s+support"
+     r"|(didn'?t|hasn'?t|won'?t)\s+pay"
+     r"|(owes?|owed)\s+(me\s+)?(child\s+support|alimony|\$|money|back\s+pay)"
+     r"|delinquent\s+(on\s+)?(support|payments?)"
+     r"|in\s+arrears?"
+     r"|withhold(ing|ed)?\s+(money|support|payment|my\s+share)"
+     r"|hiding\s+(income|assets?|money|accounts?)"
+     r"|(quit|quitting|left|leaving)\s+(his|her)\s+job\s+to\s+(avoid|get\s+out\s+of)\s+(paying|support)"
+     r"|stopped\s+paying\s+(support|alimony|child\s+support)"
+     r"|(missed|skip(ped|ping))\s+(a\s+)?(support\s+)?payment"
+     r"|drained\s+(the\s+)?(account|savings|funds?)"
+     r"|max(ed|ing)\s+out\s+(the\s+)?(credit\s+card|card|account)"
+     r"|transferred\s+(money|assets?|funds?)\s+(to|into)\s+(his|her|their)\s+(name|account))"
+    ),
+
+    ("Emotional Abuse", 2.0,
+     r"((calling|call(s|ed))\s+me\s+(crazy|insane|stupid|worthless|a\s+(liar|psycho|narcissist|bitch|loser))"
+     r"|gaslight(ing|ed)?"
+     r"|manipulat(e|ed|es|ing|ion)"
+     r"|word\s+salad"
+     r"|(your|it'?s\s+all\s+your)\s+fault"
+     r"|you'?re\s+(crazy|insane|unstable|a\s+(bad|terrible|unfit)\s+(mother|father|parent))"
+     r"|humiliat(e|ed|es|ing)\s+(me|you)"
+     r"|(scream(ed|ing|s)|yell(ed|ing|s)|shout(ed|ing|s))\s+at\s+(me|the\s+kids?|him|her)"
+     r"|(name.?call(ing|ed)|calling\s+(me|you)\s+names?)"
+     r"|constantly\s+(criticiz|belittl|degrad|berat)\S+"
+     r"|nothing\s+I\s+(do|say)\s+is\s+(ever\s+)?(good|right|enough)"
+     r"|made\s+(me|him|her|them)\s+feel\s+(worthless|stupid|like\s+nothing))"
+    ),
+
+    ("Neglect / Safety", 2.0,
+     r"((left|leaving)\s+(him|her|them|the\s*kids?)\s+(alone|unsupervised|by\s+(him|her)self)"
+     r"|(didn'?t|doesn'?t)\s+(feed|bathe|clothe|take\s+(him|her|them)\s+to)\s+(the\s+)?(doctor|school)"
+     r"|(sent|sending|goes?)\s+(him|her|them)\s+to\s+school\s+(hungry|without\s+eating|unfed|in\s+dirty\s+clothes)"
+     r"|(bruise|mark|injury|injuries|hurt|injured)\s+(on\s+)?(him|her|them|his|her)\s+(body|arm|leg|face)"
+     r"|came\s+home\s+(dirty|hungry|unfed|injured|hurt|with\s+(bruises?|marks?))"
+     r"|(dangerous|unsafe|hazardous)\s+(environment|home|conditions?|situation)"
+     r"|(no\s+food|nothing\s+to\s+eat|going\s+hungry)\s+(in\s+the\s+house|at\s+(his|her)\s+place)"
+     r"|(smoke|smoking)\s+(around|near|in\s+front\s+of)\s+(the\s+kids?|him|her)"
+     r"|(exposed|exposing)\s+(him|her|them)\s+to\s+(violence|drugs?|dangerous\s+people))"
+    ),
+
+    ("Substance Concern", 2.0,
+     r"((drunk|drinking|intoxicated|wasted)\s+(around|near|in\s+front\s+of|while\s+with)\s+(the\s+kids?|him|her)"
+     r"|(drunk|high|intoxicated)\s+while\s+(driving|watching|caring\s+for|supervising)\s+(him|her|them|the\s*kids?)"
+     r"|(drugs?|drug\s+use)\s+(around|near|in\s+front\s+of)\s+(the\s+kids?|him|her)"
+     r"|(smells?\s+like\s+(alcohol|beer|liquor|marijuana|weed)|reeked\s+of)"
+     r"|DUI|driving\s+under\s+the\s+influence\s+with\s+(the\s+kids?|him|her)"
+     r"|alcohol\s+problem|drug\s+problem"
+     r"|found\s+(drugs?|needles?|paraphernalia|pills?|bottles?)\s+(in\s+the\s+house|at\s+(his|her)\s+place))"
+    ),
+
+    ("Child Statement", 1.0,
+     r"((he|she|they)\s+told\s+me\s+(that\s+)?(daddy|mommy|dad|mom|he|she)\s+(said|told|does?|hits?|hurt)"
+     r"|(the\s+)?(kid|child|son|daughter)\s+said\s+(that\s+)?(daddy|mommy|dad|mom|he|she)"
+     r"|told\s+(his|her|their)\s+(teacher|counselor|therapist|doctor)\s+that"
+     r"|according\s+to\s+(him|her|them|my\s+(son|daughter|child))"
+     r"|my\s+(son|daughter|child|kid)\s+(told|said|mentioned|reported)\s+me\s+(that|he|she|about))"
+    ),
+
+    ("Relocation", 5.0,
+     r"((moving|move|relocat\S+)\s+(out\s+of\s+state|to\s+another\s+state|away|far\s+away)"
+     r"|(planning|plans?)\s+to\s+(move|relocate)\s+(with|and\s+take)\s+(him|her|them|the\s*kids?)"
+     r"|(taking|took)\s+(him|her|them|the\s*kids?)\s+(out\s+of\s+state|across\s+state\s+lines?)"
+     r"|(without|with\s+no)\s+(notice|permission|court\s+approval)\s+(moved|relocat\S+)"
+     r"|(didn'?t|doesn'?t|won'?t)\s+(tell|inform|notify|let)\s+me\s+(about\s+the\s+)?(move|relocation)"
+     r"|left\s+the\s+state\s+with\s+(him|her|them|the\s*kids?))"
+    ),
+]
+
+def scan_patterns(text):
+    """Return list of (category, weight, confidence) for all patterns matching text.
+    confidence: 'possible' (w<3), 'likely' (w 3-4), 'strong' (w>=5)
+    """
+    found = []
+    seen = set()
+    for label, weight, pat in PATTERNS:
+        if label not in seen and re.search(pat, text, re.IGNORECASE):
+            if weight >= 5.0:
+                confidence = "strong"
+            elif weight >= 3.0:
+                confidence = "likely"
+            else:
+                confidence = "possible"
+            found.append((label, weight, confidence))
+            seen.add(label)
+    return found
+
+_CONFIDENCE_LABELS = {
+    "strong":   "Strong indicator â€” pattern closely matches known violation language.",
+    "likely":   "Likely indicator â€” pattern matches common conduct of concern.",
+    "possible": "Possible indicator â€” language may be relevant; confirm carefully.",
+}
+_CONFIDENCE_DISCLAIMER = (
+    "This flag does NOT establish a legal violation. "
+    "Review the entry and confirm only if it accurately represents what occurred."
+)
+
+def top_category(text):
+    """Return the highest-weight category label for a piece of text, or None."""
+    matches = scan_patterns(text)
+    if not matches:
+        return None
+    return max(matches, key=lambda x: x[1])[0]
+
+# =====================================================================
+# STATE INTERPRETATION LAYER â€” deterministic plain-English translation
+# =====================================================================
+
+def interpret_case_state(snapshot):
+    """Translate x/y/z scores into plain-English guidance. No AI call."""
+    st  = snapshot["state"]
+    inp = snapshot["inputs"]
+    x, y, z = st["x"], st["y"], st["z"]
+    over     = inp.get("overdue_deadlines", 0)
+    ev       = inp.get("evidence_count", 0)
+    total_dl = inp.get("total_deadlines", 0)
+    done_dl  = inp.get("done_deadlines", 0)
+
+    # Evidence Strength (x)
+    if x <= 2:
+        x_text = (
+            f"Your evidence is thin ({ev} confirmed exhibit{'s' if ev!=1 else ''}). "
+            "Courts expect documented facts. Add dated communications, records, or witness statements now."
+        )
+    elif x <= 4:
+        x_text = (
+            f"Developing evidence base ({ev} exhibits). "
+            "Confirm unreviewed items and add dates to undated entries â€” "
+            "courts weight contemporaneous records most heavily."
+        )
+    elif x <= 6:
+        x_text = (
+            f"Solid evidence base ({ev} exhibits). "
+            "Look for gaps: are all key incidents documented? "
+            "Corroborating records strengthen credibility."
+        )
+    else:
+        x_text = (
+            f"Strong documented evidence ({ev} exhibits). "
+            "Prioritize organizing exhibits chronologically and linking each to a specific legal issue."
+        )
+
+    # Procedural Health (y)
+    if over > 0:
+        y_text = (
+            f"{over} deadline{'s are' if over>1 else ' is'} overdue. "
+            "Missed filings are visible to the court and can be used against you. "
+            "File immediately or submit a Motion for Continuance."
+        )
+    elif y <= 2:
+        y_text = (
+            "Procedural standing is weak. "
+            "Add all known court dates, filing deadlines, and response windows so nothing is missed."
+        )
+    elif y <= 5:
+        if total_dl > 0:
+            pct = int((done_dl / total_dl) * 100)
+            y_text = (
+                f"{pct}% of deadlines completed ({done_dl}/{total_dl}). "
+                "Courts view consistent compliance favorably â€” mark each deadline complete as you file."
             )
-            conn.commit()
+        else:
+            y_text = (
+                "No deadlines tracked. Add all known court dates and filing windows."
+            )
+    else:
+        y_text = (
+            f"Procedural standing strong ({done_dl}/{total_dl} deadlines met, none overdue). "
+            "Consistent compliance is itself a form of evidence."
+        )
+
+    # Adversarial Pressure (z)
+    if z <= 2:
+        z_text = (
+            "Low documented adversarial conduct. "
+            "Log any incidents immediately with dates, exact quotes, and context â€” "
+            "contemporaneous records are far more credible than later recollections."
+        )
+    elif z <= 5:
+        z_text = (
+            "Moderate adverse conduct documented. "
+            "These exhibits may support a finding of bad faith or willful non-compliance. "
+            "Run Adversarial Analysis to see how opposing counsel will frame these."
+        )
+    else:
+        z_text = (
+            "High adversarial pressure documented. "
+            "The pattern in your evidence is significant. "
+            "Consider whether a Motion for Contempt or Emergency Motion is appropriate."
+        )
+
+    # Overall urgency
+    if over > 0:
+        urgency = "critical"
+    elif z >= 7 and x <= 3:
+        urgency = "high"
+    elif y <= 3 or (z >= 5 and ev < 5):
+        urgency = "moderate"
+    else:
+        urgency = "normal"
+
+    if urgency == "critical":
+        summary = f"You have {over} overdue deadline{'s' if over>1 else ''} â€” act immediately."
+    elif urgency == "high":
+        summary = "Serious adversarial conduct documented but evidence base needs strengthening."
+    elif urgency == "moderate":
+        summary = "Case is developing â€” procedural and evidence gaps need attention before your hearing."
+    else:
+        summary = "Case is well-organized. Keep documenting and stay on top of deadlines."
+
+    return {"x_text": x_text, "y_text": y_text, "z_text": z_text,
+            "urgency": urgency, "summary": summary}
+
+# =====================================================================
+# PROACTIVE GUIDANCE ENGINE â€” deterministic priority-ranked action list
+# =====================================================================
+
+def compute_guidance(case_id):
+    """Priority-ranked action list from case state. No AI call."""
+    conn = get_db()
+    case = conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
+    if not case:
+        conn.close(); return []
+    c = dict(case)
+    ev_all    = conn.execute(
+        "SELECT * FROM evidence WHERE case_id=? AND (is_deleted IS NULL OR is_deleted=0)",
+        (case_id,)
+    ).fetchall()
+    deadlines = conn.execute(
+        "SELECT * FROM deadlines WHERE case_id=? ORDER BY due_date ASC", (case_id,)
+    ).fetchall()
+    docs = conn.execute(
+        "SELECT doc_type FROM documents WHERE case_id=? AND (is_deleted IS NULL OR is_deleted=0)",
+        (case_id,)
+    ).fetchall()
+    party_count = conn.execute(
+        "SELECT COUNT(*) FROM parties WHERE case_id=?", (case_id,)
+    ).fetchone()[0]
+    conn.close()
+
+    confirmed  = [e for e in ev_all if e["confirmed"]]
+    unreviewed = [e for e in ev_all if not e["confirmed"]]
+    overdue    = [d for d in deadlines if not d["completed"] and d["due_date"]
+                  and d["due_date"] < date.today().isoformat()]
+    upcoming   = [d for d in deadlines if not d["completed"] and d["due_date"]
+                  and date.today().isoformat() <= d["due_date"]]
+    doc_types  = {d["doc_type"] for d in docs}
+
+    hearing_str = c.get("hearing_date","")
+    days_to_hearing = None
+    if hearing_str:
+        try:
+            hd = datetime.strptime(hearing_str, "%Y-%m-%d").date()
+            days_to_hearing = (hd - date.today()).days
         except Exception:
             pass
-        conn.close()
+
+    actions = []
+
+    for d in overdue:
+        actions.append({
+            "priority": 0, "level": "critical", "icon": "ðŸ”´",
+            "title": f"OVERDUE: {d['title']}",
+            "detail": (
+                f"Was due {d['due_date']}. File immediately or request a continuance. "
+                "Missed deadlines are visible to the court."
+            ),
+            "action_tab": "deadlines",
+        })
+
+    if days_to_hearing is not None and 0 <= days_to_hearing <= 7:
+        actions.append({
+            "priority": 1, "level": "critical", "icon": "âš–ï¸",
+            "title": f"Hearing in {days_to_hearing} day{'s' if days_to_hearing!=1 else ''}",
+            "detail": (
+                "Open Courtroom View to review your exhibits and opening statement. "
+                "Ensure your Hearing Prep Guide is generated."
+            ),
+            "action_tab": "hearing",
+        })
+
+    if unreviewed:
+        actions.append({
+            "priority": 2, "level": "high", "icon": "âš ï¸",
+            "title": f"{len(unreviewed)} item{'s' if len(unreviewed)>1 else ''} need{'s' if len(unreviewed)==1 else ''} review",
+            "detail": (
+                "Flagged items are not yet confirmed. "
+                "Unconfirmed items don't count toward your evidence strength score."
+            ),
+            "action_tab": "evidence",
+        })
+
+    if not confirmed:
+        actions.append({
+            "priority": 3, "level": "high", "icon": "ðŸ“‹",
+            "title": "No confirmed evidence yet",
+            "detail": (
+                "Add your first evidence item. Start with the most recent and most serious incident. "
+                "Dated, specific records carry the most weight with courts."
+            ),
+            "action_tab": "evidence",
+        })
+    elif len(confirmed) < 5 and days_to_hearing is not None and days_to_hearing <= 30:
+        actions.append({
+            "priority": 4, "level": "high", "icon": "ðŸ“‹",
+            "title": f"Only {len(confirmed)} confirmed exhibit{'s' if len(confirmed)!=1 else ''} â€” hearing approaching",
+            "detail": (
+                "Courts expect documented facts. Add remaining incidents, "
+                "communications, or records before your hearing date."
+            ),
+            "action_tab": "evidence",
+        })
+
+    if not deadlines and c.get("hearing_date"):
+        actions.append({
+            "priority": 5, "level": "moderate", "icon": "ðŸ“…",
+            "title": "No deadlines tracked",
+            "detail": (
+                "You have a hearing date set but no deadlines logged. "
+                "Add response deadlines, filing dates, and exchange dates."
+            ),
+            "action_tab": "deadlines",
+        })
+
+    if upcoming:
+        next_dl = upcoming[0]
+        try:
+            dl_days = (datetime.strptime(next_dl["due_date"], "%Y-%m-%d").date() - date.today()).days
+            if dl_days <= 5:
+                actions.append({
+                    "priority": 6, "level": "moderate", "icon": "ðŸ“…",
+                    "title": f"Deadline in {dl_days} day{'s' if dl_days!=1 else ''}: {next_dl['title']}",
+                    "detail": f"Due {next_dl['due_date']}. Complete and mark done in the Deadlines tab.",
+                    "action_tab": "deadlines",
+                })
+        except Exception:
+            pass
+
+    if (days_to_hearing is not None and days_to_hearing <= 30
+            and "Hearing Prep Guide" not in doc_types):
+        actions.append({
+            "priority": 7, "level": "moderate", "icon": "ðŸŽ¯",
+            "title": "Generate your Hearing Prep Guide",
+            "detail": (
+                f"Your hearing is {days_to_hearing} days away. "
+                "Builds your opening statement, evidence introduction order, and anticipated arguments."
+            ),
+            "action_tab": "hearing",
+        })
+
+    if confirmed and len(confirmed) >= 3 and not any(
+        t in doc_types for t in ["Case Theory","case-theory"]
+    ):
+        actions.append({
+            "priority": 8, "level": "normal", "icon": "ðŸ§ ",
+            "title": "Build your case summary",
+            "detail": (
+                "You have enough evidence to generate a Case Summary â€” "
+                "one sentence that captures what happened, what law applies, and what you're asking for."
+            ),
+            "action_tab": "strategy",
+        })
+
+    snap = compute_case_state(case_id)
+    if snap["state"]["z"] >= 6 and not any(
+        "Contempt" in dt or "Emergency" in dt for dt in doc_types
+    ):
+        actions.append({
+            "priority": 9, "level": "normal", "icon": "âš–ï¸",
+            "title": "High adverse conduct â€” consider a motion",
+            "detail": (
+                "Your evidence shows a significant pattern of violations. "
+                "A Motion for Contempt or Emergency Motion may be appropriate."
+            ),
+            "action_tab": "motions",
+        })
+
+    if party_count == 0:
+        actions.append({
+            "priority": 10, "level": "normal", "icon": "ðŸ‘¤",
+            "title": "Add case parties",
+            "detail": (
+                "No parties entered. Adding the other party and their attorney "
+                "helps the AI generate more accurate documents."
+            ),
+            "action_tab": "overview",
+        })
+
+    actions.sort(key=lambda a: a["priority"])
+    return actions[:6]
 
 
-# ── Auth helpers (preserved from v1) ─────────────────────────────────────────
+def assign_exhibit_number(conn, case_id):
+    row = conn.execute(
+        "SELECT COUNT(*) as n FROM evidence WHERE case_id=? AND confirmed=1", (case_id,)
+    ).fetchone()
+    n = (row["n"] or 0) + 1
+    return f"Exhibit {n}"
+
+def export_evidence_txt(case_id):
+    """Build a plain-text evidence manifest for a case. Returns (filename, bytes)."""
+    conn = get_db()
+    case     = conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
+    parties  = conn.execute("SELECT * FROM parties WHERE case_id=?", (case_id,)).fetchall()
+    evidence = conn.execute(
+        "SELECT * FROM evidence WHERE case_id=? AND confirmed=1 ORDER BY event_date ASC, created_at ASC",
+        (case_id,)
+    ).fetchall()
+    timeline = conn.execute(
+        "SELECT * FROM timeline_events WHERE case_id=? ORDER BY event_date ASC", (case_id,)
+    ).fetchall()
+    financials = conn.execute(
+        "SELECT * FROM financials WHERE case_id=? ORDER BY entry_date ASC", (case_id,)
+    ).fetchall()
+    conn.close()
+
+    c = dict(case) if case else {}
+    lines = []
+    sep = "=" * 60
+
+    lines += [
+        sep,
+        "  SYNJURIS â€” EVIDENCE MANIFEST",
+        f"  Generated: {datetime.now().strftime('%B %d, %Y %H:%M')}",
+        sep, "",
+        "CASE INFORMATION",
+        "-" * 40,
+        f"  Title        : {c.get('title','')}",
+        f"  Type         : {c.get('case_type','')}",
+        f"  Jurisdiction : {c.get('jurisdiction','')}",
+        f"  Court        : {c.get('court_name','')}",
+        f"  Case Number  : {c.get('case_number','')}",
+        f"  Hearing Date : {c.get('hearing_date','')}",
+        "",
+    ]
+
+    if parties:
+        lines += ["PARTIES", "-" * 40]
+        for p in parties:
+            atty = f" (Attorney: {p['attorney']})" if p['attorney'] else ""
+            lines.append(f"  {p['role']}: {p['name']}{atty}")
+        lines.append("")
+
+    lines += [
+        f"CONFIRMED EVIDENCE ({len(evidence)} items)",
+        "-" * 40,
+    ]
+    for e in evidence:
+        lines += [
+            f"  {e['exhibit_number'] or 'Unumbered'}",
+            f"  Date     : {e['event_date'] or 'Unknown'}",
+            f"  Category : {e['category'] or 'General'}",
+            f"  Source   : {e['source'] or 'Not specified'}",
+            f"  Content  :",
+        ]
+        # word-wrap content at 70 chars
+        content = e['content'] or ''
+        for chunk in [content[i:i+70] for i in range(0, len(content), 70)]:
+            lines.append(f"    {chunk}")
+        if e['notes']:
+            lines.append(f"  Notes    : {e['notes']}")
+        lines.append("-" * 40)
+    lines.append("")
+
+    if timeline:
+        lines += [f"TIMELINE ({len(timeline)} events)", "-" * 40]
+        for t in timeline:
+            imp = " [HIGH]" if t['importance'] == 'high' else ""
+            lines.append(f"  {t['event_date'] or 'Undated'}{imp}: {t['title']}")
+            if t['description']:
+                lines.append(f"    {t['description']}")
+        lines.append("")
+
+    if financials:
+        income  = sum(f['amount'] or 0 for f in financials if f['direction'] == 'income')
+        expense = sum(f['amount'] or 0 for f in financials if f['direction'] == 'expense')
+        lines += [f"FINANCIAL RECORDS ({len(financials)} entries)", "-" * 40]
+        for f in financials:
+            sign = "+" if f['direction'] == 'income' else "-"
+            lines.append(f"  {f['entry_date'] or 'Undated'}  {sign}${(f['amount'] or 0):.2f}  {f['description']}  [{f['category']}]")
+        lines += [
+            "",
+            f"  Total income  : +${income:.2f}",
+            f"  Total expense : -${expense:.2f}",
+            f"  Net           :  ${income - expense:.2f}",
+            "",
+        ]
+
+    lines += [
+        sep,
+        "  DISCLAIMER: This manifest was generated by SynJuris.",
+        "  Review all items carefully before filing with a court.",
+        "  This document does not constitute legal advice.",
+        sep,
+    ]
+
+    text = "\n".join(lines)
+    safe_title = re.sub(r"[^\w\s-]", "", c.get('title', 'case')).strip().replace(" ", "_")[:40]
+    filename = f"SynJuris_Exhibit_{safe_title}_{date.today().isoformat()}.txt"
+    return filename, text.encode("utf-8")
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# AUTH HELPERS
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+import secrets
+
+# â”€â”€ Password hashing: PBKDF2-HMAC-SHA256, 100 000 iterations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Equivalent security class to bcrypt work-factor 12. Zero external deps.
+# Format on disk: "pbkdf2:<iterations>:<hex-salt>:<hex-digest>"
+# Old sha256 format "salt:hex" is auto-detected and rejected (user must reset).
 _PBKDF2_ITERS = 100_000
 
 def hash_password(pw: str) -> str:
@@ -824,18 +1137,29 @@ def verify_password(pw: str, stored: str) -> bool:
             expected = bytes.fromhex(dk_hex)
             candidate = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt, int(iters))
             return hmac.compare_digest(candidate, expected)
-        return False
+        else:
+            # Legacy SHA-256 format detected â€” force re-hash on next login
+            # by always returning False (safe: user just needs to re-register
+            # or admin can reset). Don't silently accept weak hashes.
+            return False
     except Exception:
         return False
 
+_SESSION_DAYS = 30   # cookie + DB lifetime
+_MAX_AUTH_ATTEMPTS = 5   # per email per window
+_AUTH_WINDOW_SECONDS = 300  # 5 minutes
+
 def create_session(user_id):
-    import TIMESTAMP as _dt
     token = secrets.token_hex(32)
-    expires = (_dt.TIMESTAMP.utcnow() + _dt.timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    expires = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
-    conn.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)",
-                 (token, user_id, expires))
-    conn.execute("DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP")
+    # expire_at = now + 30 days (SQLite datetime arithmetic)
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?, datetime('now', '+30 days'))",
+        (token, user_id)
+    )
+    # Purge expired sessions opportunistically
+    conn.execute("DELETE FROM sessions WHERE expires_at < datetime('now')")
     conn.commit(); conn.close()
     return token
 
@@ -843,23 +1167,38 @@ def get_user_from_token(token):
     if not token: return None
     conn = get_db()
     row = conn.execute(
-        "SELECT user_id FROM sessions WHERE token=? AND expires_at > CURRENT_TIMESTAMP",
+        "SELECT user_id FROM sessions WHERE token=? AND expires_at > datetime('now')",
         (token,)
     ).fetchone()
     conn.close()
-    return (row["user_id"] if hasattr(row, "__getitem__") else row[0]) if row else None
+    return row["user_id"] if row else None
 
-_LOCAL_USER_ID = 1
+def _check_rate_limit(email: str) -> bool:
+    """Return True if login is allowed, False if rate-limited."""
+    conn = get_db()
+    window_start = f"datetime('now', '-{_AUTH_WINDOW_SECONDS} seconds')"
+    count = conn.execute(
+        f"SELECT COUNT(*) FROM auth_attempts WHERE email=? AND success=0 AND attempted_at > {window_start}",
+        (email.lower(),)
+    ).fetchone()[0]
+    conn.close()
+    return count < _MAX_AUTH_ATTEMPTS
 
-def require_auth(handler):
-    if LOCAL_MODE: return _LOCAL_USER_ID
-    token = _get_token(handler)
-    uid = get_user_from_token(token)
-    if not uid:
-        handler.send_json({"error": "unauthorized"}, 401)
-    return uid
+def _record_auth_attempt(email: str, success: bool):
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO auth_attempts (email, success) VALUES (?,?)",
+        (email.lower(), 1 if success else 0)
+    )
+    # Trim old records (keep last 1000 per email to avoid unbounded growth)
+    conn.execute(
+        "DELETE FROM auth_attempts WHERE id IN ("
+        "  SELECT id FROM auth_attempts WHERE email=? ORDER BY id DESC LIMIT -1 OFFSET 1000"
+        ")", (email.lower(),)
+    )
+    conn.commit(); conn.close()
 
-def _get_token(handler):
+def get_token_from_request(handler):
     cookie = handler.headers.get("Cookie", "")
     for part in cookie.split(";"):
         part = part.strip()
@@ -867,17 +1206,29 @@ def _get_token(handler):
             return part[len("sj_token="):]
     return None
 
-def assign_exhibit_number(conn, case_id):
-    row = conn.execute(
-        "SELECT COUNT(*) as n FROM evidence WHERE case_id=? AND confirmed=1", (case_id,)
-    ).fetchone()
-    n = ((row["n"] if hasattr(row, "__getitem__") else row[0]) or 0) + 1
-    return f"Exhibit {n}"
+def get_user_tier(user_id):
+    """Return 'attorney' or 'pro_se' for the given user."""
+    conn = get_db()
+    row = conn.execute("SELECT tier FROM users WHERE id=?", (user_id,)).fetchone()
+    conn.close()
+    return (row["tier"] or "pro_se") if row else "pro_se"
 
+def require_auth(handler):
+    """Returns user_id or sends 401 and returns None."""
+    token = get_token_from_request(handler)
+    uid = get_user_from_token(token)
+    if not uid:
+        handler.send_json({"error": "unauthorized"}, 401)
+    return uid
 
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ── V1 HTML assets ────────────────────────────────────────────────────────────
+def require_attorney(handler):
+    """Returns user_id only for attorney-tier users, else 403."""
+    uid = require_auth(handler)
+    if not uid: return None
+    if get_user_tier(uid) != "attorney":
+        handler.send_json({"error": "Attorney tier required"}, 403)
+        return None
+    return uid
 
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -916,7 +1267,7 @@ LOGIN_HTML = """<!DOCTYPE html>
     <label>Email</label>
     <input type="email" id="email" placeholder="you@example.com" autocomplete="email">
     <label>Password</label>
-    <input type="password" id="password" placeholder="••••••••" autocomplete="current-password">
+    <input type="password" id="password" placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" autocomplete="current-password">
     <button onclick="doLogin()">Sign In</button>
     <div class="toggle">No account? <a onclick="showSignup()">Create one</a></div>
   </div>
@@ -968,6 +1319,1680 @@ document.addEventListener('keydown',function(e){if(e.key==='Enter'){
 </body>
 </html>"""
 
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# CLAUDE API
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+def call_claude(messages, system="", max_tokens=2000, model="claude-sonnet-4-20250514"):
+    if not API_KEY:
+        return ("âš ï¸ AI features require an Anthropic API key.\n\n"
+                "Set it before starting SynJuris:\n"
+                "  Mac/Linux: export ANTHROPIC_API_KEY=your-key-here\n"
+                "  Windows:   set ANTHROPIC_API_KEY=your-key-here\n\n"
+                "Get a free key at: https://console.anthropic.com\n\n"
+                "Everything else in SynJuris works without a key.")
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": messages
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages", data=payload,
+        headers={"Content-Type":"application/json","x-api-key":API_KEY,"anthropic-version":"2023-06-01"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read())["content"][0]["text"]
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        # If Sonnet is unavailable, fall back to Haiku for non-critical calls
+        if e.code == 529 and model != "claude-haiku-4-5-20251001":
+            return call_claude(messages, system, max_tokens, model="claude-haiku-4-5-20251001")
+        try:
+            msg = json.loads(body).get("error", {}).get("message", body)
+        except Exception:
+            msg = body[:300]
+        codes = {
+            401: "Invalid API key. Check your ANTHROPIC_API_KEY.",
+            403: "API key doesn't have permission for this request.",
+            429: "Rate limit reached. Please wait a moment and try again.",
+            500: "Anthropic server error. Try again in a few seconds.",
+            529: "Anthropic is overloaded right now. Try again shortly.",
+        }
+        friendly = codes.get(e.code, f"API error {e.code}")
+        return f"âš ï¸ {friendly}\n\nDetail: {msg}"
+    except urllib.error.URLError as e:
+        return f"âš ï¸ Could not reach Anthropic. Check your internet connection.\n\nDetail: {e.reason}"
+    except TimeoutError:
+        return "âš ï¸ Request timed out. The response was taking too long â€” try again."
+    except Exception as e:
+        return f"âš ï¸ Unexpected error: {e}"
+
+def _keyword_relevance(query: str, text: str) -> int:
+    """Count shared significant words between query and evidence text (simple RAG proxy)."""
+    stop = {"the","a","an","is","in","of","to","and","or","for","that","was","it","on","at","be","with","as","by"}
+    q_words = {w.lower() for w in re.findall(r'\w+', query) if len(w) > 3 and w.lower() not in stop}
+    t_words = {w.lower() for w in re.findall(r'\w+', text) if len(w) > 3 and w.lower() not in stop}
+    return len(q_words & t_words)
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# COURTLISTENER CITATION VERIFICATION
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# Uses the free CourtListener API (no key required for basic search).
+# Checks whether a case citation actually exists in the federal/state database.
+# Results cached in citation_cache to avoid redundant network calls.
+
+_COURTLISTENER_API = "https://www.courtlistener.com/api/rest/v4/search/"
+_CITATION_RE = re.compile(
+    r'\b(\d+)\s+(U\.?S\.?|F\.?\d*d?|S\.?\s*Ct\.?|'
+    r'F\.?\s*Supp\.?\s*\d*d?|[A-Z][a-z]+\.?\s*[A-Z]?[a-z]*\.?)\s+(\d+)'
+    r'(?:\s*\(\w[^)]*\d{4}\))?',
+    re.IGNORECASE
+)
+
+def extract_citations(text):
+    """Pull all case citation candidates from an AI-generated text block."""
+    return list(dict.fromkeys(_CITATION_RE.findall(text)))  # dedup, preserve order
+
+def verify_citation_courtlistener(citation_str):
+    """
+    Query CourtListener for a citation string.
+    Returns dict: {found: bool, url: str|None, case_name: str|None, warning: str|None}
+    Caches result in citation_cache table. Never raises â€” always returns a dict.
+    """
+    conn = get_db()
+    cached = conn.execute(
+        "SELECT result_json FROM citation_cache WHERE citation=?", (citation_str,)
+    ).fetchone()
+    conn.close()
+    if cached:
+        try: return json.loads(cached["result_json"])
+        except Exception: pass
+
+    result = {"citation": citation_str, "found": False, "url": None,
+              "case_name": None, "warning": None}
+    try:
+        params = urllib.parse.urlencode({"q": f'"{citation_str}"', "type": "o", "format": "json"})
+        url = f"{_COURTLISTENER_API}?{params}"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": f"SynJuris/{VERSION} (citation-verify; contact: support@synjuris.com)"
+        })
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read())
+        count = data.get("count", 0)
+        if count > 0:
+            result["found"] = True
+            first = data["results"][0]
+            result["case_name"] = first.get("caseName") or first.get("case_name","")
+            result["url"] = (
+                f"https://www.courtlistener.com{first['absolute_url']}"
+                if first.get("absolute_url") else None
+            )
+        else:
+            result["warning"] = (
+                f"Citation '{citation_str}' not found in CourtListener. "
+                "Verify this citation exists before filing."
+            )
+    except Exception as e:
+        result["warning"] = f"Citation check unavailable (offline?): {e}"
+
+    # Cache for 30 days
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO citation_cache (citation, result_json) VALUES (?,?)",
+            (citation_str, json.dumps(result))
+        )
+        conn.commit()
+    except Exception:
+        pass
+    conn.close()
+    return result
+
+def verify_citations_in_text(text):
+    """
+    Scan AI output for case citations, verify each against CourtListener.
+    Returns list of verification results. Empty list if none found or offline.
+    """
+    raw_matches = _CITATION_RE.findall(text)
+    if not raw_matches:
+        return []
+    # Reconstruct citation strings from regex groups
+    seen = set()
+    results = []
+    for m in _CITATION_RE.finditer(text):
+        cit = m.group(0).strip()
+        if cit not in seen:
+            seen.add(cit)
+            results.append(verify_citation_courtlistener(cit))
+    return results
+
+
+def build_case_system(case_id, user_query: str = ""):
+    conn = get_db()
+    case     = conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
+    parties  = conn.execute("SELECT * FROM parties WHERE case_id=?", (case_id,)).fetchall()
+    _WEIGHT = {label: w for label, w, _ in PATTERNS}
+    all_ev = conn.execute(
+        "SELECT exhibit_number,content,category,event_date FROM evidence "
+        "WHERE case_id=? AND confirmed=1 AND (is_deleted IS NULL OR is_deleted=0) ORDER BY event_date ASC",
+        (case_id,)
+    ).fetchall()
+    # RAG: score each exhibit by severity weight + keyword overlap with user query
+    def _score(r):
+        base = _WEIGHT.get(r["category"], 0)
+        kw   = _keyword_relevance(user_query, r["content"] or "") if user_query else 0
+        return base + kw * 0.5
+    evidence = sorted(all_ev, key=_score, reverse=True)[:30]
+    evidence = sorted(evidence, key=lambda r: r["event_date"] or "")  # re-sort by date for readability
+    deadlines = conn.execute(
+        "SELECT due_date,title FROM deadlines WHERE case_id=? AND completed=0 ORDER BY due_date ASC LIMIT 10",
+        (case_id,)
+    ).fetchall()
+    conn.close()
+    if not case: return ("", None)
+    c = dict(case)
+    ev_text = "\n".join([f"  [{e['exhibit_number'] or 'unnum'}] [{e['event_date'] or 'undated'}] ({e['category']}): {(e['content'] or '')[:250]}" for e in evidence]) or "  None confirmed yet."
+    dl_text = "\n".join([f"  {d['due_date']}: {d['title']}" for d in deadlines]) or "  None."
+    party_text = "\n".join([f"  {p['role']}: {p['name']}" + (f" (atty: {p['attorney']})" if p['attorney'] else '') for p in parties]) or "  None entered."
+    jur_block = jurisdiction_statute_block(c.get('jurisdiction',''))
+    system = f"""You are SynJuris, a plain-language legal assistant helping a pro se litigant (someone representing themselves in court without a lawyer).
+
+CASE FILE
+  Title: {c['title']}
+  Type: {c['case_type']}
+  {jur_block}
+  Court: {c['court_name'] or 'not set'}
+  Case #: {c['case_number'] or 'not set'}
+  Hearing date: {c['hearing_date'] or 'not set'}
+  Goals: {c['goals'] or 'not stated'}
+
+PARTIES
+{party_text}
+
+CONFIRMED EVIDENCE ({len(evidence)} items)
+{ev_text}
+
+UPCOMING DEADLINES
+{dl_text}
+
+YOUR RULES:
+1. Always speak in plain, clear English. Explain any legal term the moment you use it.
+2. You are NOT a lawyer. Always note this and recommend consulting one for final decisions.
+3. When explaining a law, cite the specific statute AND explain what it means practically for THIS person.
+4. Be warm and empathetic. These are people in stressful, often frightening situations.
+5. When asked to draft a document, produce a complete, properly formatted draft with [BRACKET PLACEHOLDERS] for info you don't have.
+6. Never invent statutes or case law. If you're not certain of a specific statute number, say so and describe the general legal principle.
+7. When discussing hearing prep, be specific: what to say, what NOT to say, how to address the judge, how to handle objections.
+8. For financial questions, walk through the math step by step.
+9. If someone seems to be in danger or describes domestic violence, always provide safety resources first."""
+    snapshot = compute_case_state(case_id)
+    st = snapshot["state"]; inp = snapshot["inputs"]
+    state_block = (
+        f"  Evidence Strength    (x={st['x']}/9): {inp['evidence_count']} confirmed exhibits, severity sum {inp['ev_weight_sum']}\n"
+        f"  Procedural Health    (y={st['y']}/9): {inp['done_deadlines']}/{inp['total_deadlines']} deadlines met, {inp['overdue_deadlines']} overdue\n"
+        f"  Adversarial Pressure (z={st['z']}/9): opponent pattern weight sum {inp['adv_weight_sum']}\n"
+        f"  State Hash: {snapshot['hash'][:16]}...")
+    system += ("\n\nCASE DYNAMICS STATE (deterministic â€” computed from your evidence and deadlines)\n"
+               + state_block +
+               "\n  x 1-3=thin evidence; 4-6=developing; 7-9=strong\n"
+               "  y 1-3=procedural risk; 4-6=on track; 7-9=well-organised\n"
+               "  z 1-3=low aggression; 4-6=moderate; 7-9=highly adversarial\n"
+               "  Ground your analysis in these computed values.")
+    meta = {"snapshot": snapshot, "prompt_inputs": {"case_id": case_id, "state": st, "trace_hash": snapshot["hash"]}}
+    return system, meta
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# HTTP HANDLER
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+
+    def _cors_origin(self):
+        """Return a tight CORS origin. Allows localhost only."""
+        return f"http://localhost:{PORT}"
+
+    def send_json(self, data, status=200):
+        b = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type","application/json")
+        self.send_header("Content-Length",len(b))
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers(); self.wfile.write(b)
+
+    def send_html(self, html):
+        b = html.encode()
+        self.send_response(200)
+        self.send_header("Content-Type","text/html;charset=utf-8")
+        self.send_header("Content-Length",len(b))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers(); self.wfile.write(b)
+
+    def body(self):
+        n = int(self.headers.get("Content-Length",0))
+        return json.loads(self.rfile.read(n)) if n else {}
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", self._cors_origin())
+        self.send_header("Access-Control-Allow-Methods","GET,POST,PUT,DELETE,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers","Content-Type")
+        self.end_headers()
+
+    def do_GET(self):
+        p = urlparse(self.path); path = p.path; qs = parse_qs(p.query)
+
+        # Auth pages
+        if path == "/login":
+            self.send_html(LOGIN_HTML); return
+        if path == "/logout":
+            token = get_token_from_request(self)
+            if token:
+                conn = get_db()
+                conn.execute("DELETE FROM sessions WHERE token=?", (token,))
+                conn.commit(); conn.close()
+            self.send_response(302)
+            self.send_header("Location", "/login")
+            self.send_header("Set-Cookie", "sj_token=; Path=/; HttpOnly; Max-Age=0")
+            self.end_headers(); return
+
+        # Main app â€” require auth
+        if path in ("/", "/index.html"):
+            uid = get_user_from_token(get_token_from_request(self))
+            if not uid:
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers(); return
+            self.send_html(UI); return
+
+        if path == "/api/cases":
+            uid = require_auth(self)
+            if not uid: return
+            conn = get_db()
+            rows = conn.execute("SELECT id,title,case_type,jurisdiction,hearing_date,case_number FROM cases WHERE user_id=? AND (is_deleted IS NULL OR is_deleted=0) ORDER BY created_at DESC", (uid,)).fetchall()
+            conn.close(); self.send_json([dict(r) for r in rows]); return
+
+        if re.match(r"^/api/cases/\d+$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            conn = get_db()
+            case      = conn.execute("SELECT * FROM cases WHERE id=? AND user_id=?", (cid, uid)).fetchone()
+            if not case: conn.close(); self.send_json({"error":"not found"},404); return
+            parties   = conn.execute("SELECT * FROM parties WHERE case_id=?", (cid,)).fetchall()
+            evidence  = conn.execute("SELECT * FROM evidence WHERE case_id=? AND (is_deleted IS NULL OR is_deleted=0) ORDER BY event_date ASC, created_at ASC", (cid,)).fetchall()
+            docs      = conn.execute("SELECT id,title,doc_type,created_at FROM documents WHERE case_id=? ORDER BY created_at DESC", (cid,)).fetchall()
+            timeline  = conn.execute("SELECT * FROM timeline_events WHERE case_id=? ORDER BY event_date ASC", (cid,)).fetchall()
+            financials= conn.execute("SELECT * FROM financials WHERE case_id=? ORDER BY entry_date DESC", (cid,)).fetchall()
+            deadlines = conn.execute("SELECT * FROM deadlines WHERE case_id=? ORDER BY due_date ASC", (cid,)).fetchall()
+            conn.close()
+            if not case: self.send_json({"error":"not found"},404); return
+            self.send_json({
+                "case": dict(case), "parties": [dict(r) for r in parties],
+                "evidence": [dict(r) for r in evidence], "documents": [dict(r) for r in docs],
+                "timeline": [dict(r) for r in timeline], "financials": [dict(r) for r in financials],
+                "deadlines": [dict(r) for r in deadlines],
+            }); return
+
+        if re.match(r"^/api/documents/\d+$", path):
+            uid = require_auth(self); 
+            if not uid: return
+            conn = get_db()
+            doc = conn.execute("SELECT * FROM documents WHERE id=?", (int(path.split("/")[3]),)).fetchone()
+            conn.close(); self.send_json(dict(doc) if doc else {"error":"not found"}); return
+
+        if re.match(r"^/api/chat/\d+$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            conn = get_db()
+            msgs = conn.execute("SELECT role,content,created_at FROM chat_history WHERE case_id=? ORDER BY created_at ASC", (cid,)).fetchall()
+            conn.close(); self.send_json([dict(m) for m in msgs]); return
+
+        # â”€â”€ Export evidence manifest as .txt â”€â”€
+        if re.match(r"^/api/cases/\d+/export$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            filename, data = export_evidence_txt(cid)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", len(data))
+            self.end_headers(); self.wfile.write(data); return
+
+        # â”€â”€ Backup: download full SQLite database â”€â”€
+        if path == "/api/backup":
+            uid = require_auth(self)
+            if not uid: return
+            try:
+                with open(DB_PATH, "rb") as f:
+                    data = f.read()
+                fname = f"synjuris_backup_{date.today().isoformat()}.db"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                self.send_header("Content-Length", len(data))
+                self.end_headers(); self.wfile.write(data)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        # â”€â”€ Full archive: database + uploads folder zipped together â”€â”€
+        if path == "/api/backup-full":
+            uid = require_auth(self)
+            if not uid: return
+            import zipfile, io as _io
+            try:
+                buf = _io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(DB_PATH, "synjuris.db")
+                    if os.path.isdir(UPLOADS_DIR):
+                        for fname_ in os.listdir(UPLOADS_DIR):
+                            fp = os.path.join(UPLOADS_DIR, fname_)
+                            if os.path.isfile(fp):
+                                zf.write(fp, f"uploads/{fname_}")
+                data = buf.getvalue()
+                fname = f"synjuris_full_backup_{date.today().isoformat()}.zip"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+                self.send_header("Content-Length", len(data))
+                self.end_headers(); self.wfile.write(data)
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        # â”€â”€ Encrypted backup: returns raw zip as base64 for client-side AES encryption â”€â”€
+        # The server never sees the passphrase. Encryption happens entirely in the browser
+        # using Web Crypto API (AES-256-GCM). The resulting .sj-backup file can only be
+        # decrypted with the user's passphrase â€” not by SynJuris, not by anyone else.
+        if path == "/api/backup-encrypted-raw":
+            uid = require_auth(self)
+            if not uid: return
+            import zipfile, io as _io, base64 as _b64
+            try:
+                buf = _io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(DB_PATH, "synjuris.db")
+                    if os.path.isdir(UPLOADS_DIR):
+                        for fname_ in os.listdir(UPLOADS_DIR):
+                            fp = os.path.join(UPLOADS_DIR, fname_)
+                            if os.path.isfile(fp):
+                                zf.write(fp, f"uploads/{fname_}")
+                raw_b64 = _b64.b64encode(buf.getvalue()).decode()
+                self.send_json({
+                    "data": raw_b64,
+                    "filename": f"synjuris_backup_{date.today().isoformat()}.sj-backup",
+                    "version": VERSION,
+                    "created_at": datetime.utcnow().isoformat() + "Z",
+                })
+            except Exception as e:
+                self.send_json({"error": str(e)}, 500)
+            return
+
+        # â”€â”€ Restore from encrypted backup: accepts decrypted zip bytes as base64 â”€â”€
+        if path == "/api/restore-backup":
+            uid = require_auth(self)
+            if not uid: return
+            # This is a destructive operation â€” require explicit confirmation flag
+            if not b.get("confirmed"):
+                self.send_json({"error":"Send confirmed:true to proceed. This replaces all local data."}, 400); return
+            import zipfile, io as _io, base64 as _b64, shutil
+            try:
+                raw = _b64.b64decode(b.get("data",""))
+                buf = _io.BytesIO(raw)
+                with zipfile.ZipFile(buf, "r") as zf:
+                    names = zf.namelist()
+                    if "synjuris.db" not in names:
+                        self.send_json({"error":"Invalid backup: synjuris.db not found in archive"}, 400); return
+                    # Write DB to a temp path first, then atomically replace
+                    tmp_db = DB_PATH + ".restore_tmp"
+                    with open(tmp_db, "wb") as f_out:
+                        f_out.write(zf.read("synjuris.db"))
+                    os.replace(tmp_db, DB_PATH)
+                    # Restore uploads
+                    for name in names:
+                        if name.startswith("uploads/") and not name.endswith("/"):
+                            fname_ = os.path.basename(name)
+                            dest = os.path.join(UPLOADS_DIR, fname_)
+                            os.makedirs(UPLOADS_DIR, exist_ok=True)
+                            with open(dest, "wb") as f_out:
+                                f_out.write(zf.read(name))
+                self.send_json({"ok": True, "restored_files": len(names)}); return
+            except Exception as e:
+                self.send_json({"error": f"Restore failed: {e}"}, 500)
+            return
+
+        # â”€â”€ Client portal page (no auth required â€” token IS the credential) â”€â”€
+        m = re.match(r"^/portal/([A-Za-z0-9_-]{20,})$", path)
+        if m:
+            token = m.group(1)
+            conn = get_db()
+            pt = conn.execute(
+                "SELECT pt.*, c.title as case_title FROM portal_tokens pt "
+                "JOIN cases c ON c.id=pt.case_id "
+                "WHERE pt.token=? AND (pt.expires_at IS NULL OR pt.expires_at > datetime('now'))",
+                (token,)
+            ).fetchone()
+            conn.close()
+            if not pt:
+                self.send_html("<h2 style='font-family:sans-serif;padding:40px'>This portal link has expired or is invalid.</h2>"); return
+            self.send_html(build_portal_html(dict(pt), token)); return
+
+        # â”€â”€ Portal evidence submission (POST without main auth) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/portal/submit":
+            body_len = int(self.headers.get("Content-Length",0))
+            raw = self.rfile.read(body_len)
+            try: b2 = json.loads(raw)
+            except Exception: self.send_json({"error":"bad json"},400); return
+            token = b2.get("token","")
+            conn = get_db()
+            pt = conn.execute(
+                "SELECT * FROM portal_tokens WHERE token=? AND (expires_at IS NULL OR expires_at > datetime('now'))",
+                (token,)
+            ).fetchone()
+            if not pt:
+                conn.close(); self.send_json({"error":"invalid token"},403); return
+            content = (b2.get("content","") or "")[:50000]
+            conn.execute(
+                "INSERT INTO portal_evidence (case_id,portal_token_id,content,source,event_date,category) "
+                "VALUES (?,?,?,?,?,?)",
+                (pt["case_id"], pt["id"], content,
+                 b2.get("source","client"), b2.get("event_date",""),
+                 b2.get("category","Document"))
+            )
+            conn.commit(); conn.close()
+            self.send_json({"ok":True,"message":"Submitted for attorney review."}); return
+
+        # â”€â”€ Serve uploaded evidence file â”€â”€
+        if re.match(r"^/uploads/", path):
+            uid = require_auth(self)
+            if not uid: return
+            # Guard: resolve the full path and verify it stays inside UPLOADS_DIR
+            filename = os.path.basename(path)
+            filepath = os.path.realpath(os.path.join(UPLOADS_DIR, filename))
+            uploads_real = os.path.realpath(UPLOADS_DIR)
+            if not filepath.startswith(uploads_real + os.sep) and filepath != uploads_real:
+                self.send_json({"error": "forbidden"}, 403); return
+            if not os.path.exists(filepath):
+                self.send_json({"error":"not found"}, 404); return
+            ext = filename.rsplit(".", 1)[-1].lower()
+            mime = {"pdf":"application/pdf","jpg":"image/jpeg","jpeg":"image/jpeg",
+                    "png":"image/png","gif":"image/gif","webp":"image/webp",
+                    "heic":"image/heic","mp4":"video/mp4","mov":"video/quicktime",
+                    "mp3":"audio/mpeg","m4a":"audio/mp4","txt":"text/plain"}.get(ext, "application/octet-stream")
+            with open(filepath, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", len(data))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers(); self.wfile.write(data); return
+
+        # â”€â”€ Courtroom View â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/courtroom$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            self.send_html(build_courtroom_html(cid)); return
+
+        # â”€â”€ Case Dynamics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/state$", path):
+            uid = require_auth(self)
+            if not uid: return
+            self.send_json(compute_case_state(int(path.split("/")[3]))); return
+
+        if re.match(r"^/api/cases/\d+/audit$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            conn = get_db()
+            rows = conn.execute("SELECT id,action_type,ai_call_type,state_x,state_y,state_z,trace_hash,created_at FROM audit_log WHERE case_id=? ORDER BY created_at DESC",(cid,)).fetchall()
+            conn.close(); self.send_json([dict(r) for r in rows]); return
+
+        # â”€â”€ Guidance: priority action list (deterministic, no AI) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/guidance$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            self.send_json(compute_guidance(cid)); return
+
+        # â”€â”€ State interpretation (deterministic, no AI) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/interpret$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            snap = compute_case_state(cid)
+            interp = interpret_case_state(snap)
+            self.send_json({**snap, "interpretation": interp}); return
+
+        # â”€â”€ Citation verification via CourtListener â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path.startswith("/api/verify-citation"):
+            uid = require_auth(self)
+            if not uid: return
+            qs = parse_qs(urlparse(self.path).query)
+            cit = urllib.parse.unquote_plus(qs.get("citation",[""])[0]).strip()
+            if not cit:
+                self.send_json({"error":"citation parameter required"},400); return
+            result = verify_citation_courtlistener(cit)
+            self.send_json(result); return
+
+        # â”€â”€ Current user profile (tier, email) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/me":
+            uid = require_auth(self)
+            if not uid: return
+            conn = get_db()
+            user = conn.execute("SELECT id,email,tier,created_at FROM users WHERE id=?", (uid,)).fetchone()
+            conn.close()
+            self.send_json(dict(user) if user else {"error":"not found"}); return
+
+        # â”€â”€ Conflict check: list all party names across user's cases â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/conflict-check":
+            uid = require_attorney(self)
+            if not uid: return
+            name_q = (self.path.split("?",1)[1] if "?" in self.path else "")
+            query_name = urllib.parse.unquote_plus(
+                dict(x.split("=") for x in name_q.split("&") if "=" in x).get("name","")
+            ).strip().lower()
+            conn = get_db()
+            parties = conn.execute(
+                "SELECT p.name, p.role, c.title, c.id FROM parties p "
+                "JOIN cases c ON c.id=p.case_id "
+                "WHERE c.user_id=? AND (c.is_deleted IS NULL OR c.is_deleted=0)",
+                (uid,)
+            ).fetchall()
+            conn.close()
+            matches = []
+            if query_name:
+                for p in parties:
+                    if query_name in (p["name"] or "").lower():
+                        matches.append({"party_name": p["name"], "role": p["role"],
+                                        "case_title": p["title"], "case_id": p["id"]})
+            # Log the check
+            conn = get_db()
+            conn.execute(
+                "INSERT INTO conflict_checks (user_id, party_names_json, result) VALUES (?,?,?)",
+                (uid, json.dumps({"query": query_name}),
+                 "conflict" if matches else "clear")
+            )
+            conn.commit(); conn.close()
+            self.send_json({"query": query_name, "matches": matches,
+                            "result": "conflict" if matches else "clear"}); return
+
+        # â”€â”€ Time entries: list for a case â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/time-entries$", path):
+            uid = require_attorney(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT * FROM time_entries WHERE case_id=? AND user_id=? ORDER BY created_at DESC",
+                (cid, uid)
+            ).fetchall()
+            conn.close()
+            self.send_json([dict(r) for r in rows]); return
+
+        # â”€â”€ Portal: get submitted evidence pending review â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/portal-queue$", path):
+            uid = require_attorney(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT pe.*, pt.label as portal_label FROM portal_evidence pe "
+                "JOIN portal_tokens pt ON pt.id=pe.portal_token_id "
+                "WHERE pe.case_id=? AND pe.approved=0 ORDER BY pe.created_at DESC",
+                (cid,)
+            ).fetchall()
+            conn.close()
+            self.send_json([dict(r) for r in rows]); return
+
+        # â”€â”€ Redacted export: state vector + arguments, no raw evidence â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/redacted-export$", path):
+            uid = require_attorney(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            self.send_json(build_redacted_export(cid, uid)); return
+
+        self.send_json({"error":"not found"},404)
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        # â”€â”€ Delete case, cascade rows, and remove orphaned files â”€â”€
+        if re.match(r"^/api/cases/\d+$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            conn = get_db()
+            case = conn.execute("SELECT id FROM cases WHERE id=? AND user_id=?", (cid, uid)).fetchone()
+            if not case:
+                conn.close(); self.send_json({"error":"not found"},404); return
+            # Soft delete: mark case and all its evidence/documents as deleted
+            conn.execute("UPDATE cases SET is_deleted=1, deleted_at=datetime('now') WHERE id=?", (cid,))
+            conn.execute("UPDATE evidence SET is_deleted=1, deleted_at=datetime('now') WHERE case_id=?", (cid,))
+            conn.execute("UPDATE documents SET is_deleted=1, deleted_at=datetime('now') WHERE case_id=?", (cid,))
+            conn.commit(); conn.close()
+            self.send_json({"ok": True, "note": "Case moved to trash. Physical files preserved on disk."}); return
+        self.send_json({"error":"not found"}, 404)
+
+    def do_POST(self):
+        path = urlparse(self.path).path; b = self.body()
+
+        # â”€â”€ Signup â”€â”€
+        if path == "/api/signup":
+            email = (b.get("email") or "").strip().lower()
+            pw = b.get("password","")
+            if not email or not pw:
+                self.send_json({"error":"Email and password required"},400); return
+            if len(pw) < 8:
+                self.send_json({"error":"Password must be at least 8 characters"},400); return
+            conn = get_db()
+            existing = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+            if existing:
+                conn.close(); self.send_json({"error":"An account with that email already exists"},400); return
+            ph = hash_password(pw)
+            c = conn.execute("INSERT INTO users (email,password_hash) VALUES (?,?)", (email, ph))
+            uid = c.lastrowid
+            conn.commit(); conn.close()
+            token = create_session(uid)
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Set-Cookie", f"sj_token={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
+            b2 = json.dumps({"ok":True}).encode()
+            self.send_header("Content-Length", len(b2))
+            self.end_headers(); self.wfile.write(b2); return
+
+        # â”€â”€ Login â”€â”€
+        if path == "/api/login":
+            email = (b.get("email") or "").strip().lower()
+            pw = b.get("password","")
+            # Rate limit: block after 5 failures in 5 minutes
+            if not _check_rate_limit(email):
+                self.send_json({"error": "Too many login attempts. Please wait a few minutes."}, 429); return
+            conn = get_db()
+            user = conn.execute("SELECT id,password_hash FROM users WHERE email=?", (email,)).fetchone()
+            conn.close()
+            ok = bool(user) and verify_password(pw, user["password_hash"])
+            _record_auth_attempt(email, ok)
+            if not ok:
+                self.send_json({"error":"Invalid email or password"},401); return
+            token = create_session(user["id"])
+            self.send_response(200)
+            self.send_header("Content-Type","application/json")
+            self.send_header("Set-Cookie", f"sj_token={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
+            b2 = json.dumps({"ok":True}).encode()
+            self.send_header("Content-Length", len(b2))
+            self.end_headers(); self.wfile.write(b2); return
+
+        # â”€â”€ Create case â”€â”€
+        if path == "/api/cases":
+            uid = require_auth(self)
+            if not uid: return
+            conn = get_db()
+            try:
+                conn.execute("BEGIN")
+                c = conn.execute(
+                    "INSERT INTO cases (title,case_type,jurisdiction,court_name,case_number,filing_deadline,hearing_date,goals,notes,user_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (b.get("title"),b.get("case_type"),b.get("jurisdiction"),b.get("court_name"),
+                     b.get("case_number"),b.get("filing_deadline"),b.get("hearing_date"),b.get("goals"),b.get("notes",""),uid)
+                )
+                cid = c.lastrowid
+                for p in b.get("parties",[]):
+                    conn.execute("INSERT INTO parties (case_id,name,role,contact,attorney) VALUES (?,?,?,?,?)",
+                        (cid,p.get("name"),p.get("role"),p.get("contact",""),p.get("attorney","")))
+                if b.get("hearing_date"):
+                    conn.execute("INSERT INTO deadlines (case_id,due_date,title) VALUES (?,?,?)",
+                        (cid, b["hearing_date"], "Court hearing"))
+                conn.commit()
+            except Exception as e:
+                conn.rollback(); conn.close()
+                self.send_json({"error": f"Failed to create case: {e}"}, 500); return
+            conn.close(); self.send_json({"id":cid}); return
+
+        # â”€â”€ Update case â”€â”€
+        if re.match(r"^/api/cases/\d+$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            # Whitelist of updatable columns â€” field names are never interpolated from user input
+            _CASE_FIELDS = {
+                "title": "title", "case_type": "case_type", "jurisdiction": "jurisdiction",
+                "court_name": "court_name", "case_number": "case_number",
+                "filing_deadline": "filing_deadline", "hearing_date": "hearing_date",
+                "goals": "goals", "notes": "notes",
+            }
+            conn = get_db()
+            updates = [(col, b[key]) for key, col in _CASE_FIELDS.items() if key in b]
+            if updates:
+                cols, vals = zip(*updates)
+                sets = ", ".join(f"{c}=?" for c in cols)
+                conn.execute(f"UPDATE cases SET {sets} WHERE id=? AND user_id=?", list(vals) + [cid, uid])
+            conn.commit(); conn.close(); self.send_json({"ok":True}); return
+
+        # â”€â”€ Evidence: add manual â”€â”€
+        if path == "/api/evidence":
+            uid = require_auth(self)
+            if not uid: return
+            conn = get_db()
+            cid = b["case_id"]
+            content = b.get("content","")
+            # Cap evidence content at 50 KB to protect DB size and AI context window
+            if len(content.encode("utf-8")) > 50_000:
+                conn.close()
+                self.send_json({"error": "Content exceeds 50 KB limit. Summarize or split into multiple entries."}, 400); return
+            tags = scan_patterns(content)
+            cat  = b.get("category") or (tags[0][0] if tags else "General")
+            en   = assign_exhibit_number(conn, cid) if b.get("confirmed",1) else None
+            c = conn.execute(
+                "INSERT INTO evidence (case_id,exhibit_number,content,source,event_date,category,confirmed,notes) VALUES (?,?,?,?,?,?,?,?)",
+                (cid,en,content,b.get("source"),b.get("event_date"),cat,b.get("confirmed",1),b.get("notes",""))
+            )
+            conn.commit(); conn.close(); self.send_json({"id":c.lastrowid,"tags":[t[0] for t in tags]}); return
+
+        # â”€â”€ Evidence: confirm â”€â”€
+        if path == "/api/evidence/confirm":
+            conn = get_db()
+            eid = b["id"]
+            ev  = conn.execute("SELECT case_id FROM evidence WHERE id=?", (eid,)).fetchone()
+            en  = assign_exhibit_number(conn, ev["case_id"]) if ev else None
+            conn.execute("UPDATE evidence SET confirmed=1, exhibit_number=? WHERE id=?", (en, eid))
+            conn.commit(); conn.close(); self.send_json({"ok":True}); return
+
+        # â”€â”€ Evidence: soft delete â”€â”€
+        if path == "/api/evidence/delete":
+            uid = require_auth(self)
+            if not uid: return
+            eid = b.get("id")
+            conn = get_db()
+            # Verify ownership via case
+            ev = conn.execute(
+                "SELECT e.id FROM evidence e JOIN cases c ON c.id=e.case_id "
+                "WHERE e.id=? AND c.user_id=?", (eid, uid)
+            ).fetchone()
+            if not ev:
+                conn.close(); self.send_json({"error":"not found"}, 404); return
+            conn.execute(
+                "UPDATE evidence SET is_deleted=1, deleted_at=datetime('now') WHERE id=?", (eid,)
+            )
+            conn.commit(); conn.close(); self.send_json({"ok":True}); return
+
+        # â”€â”€ Import XML â”€â”€
+        if path == "/api/import-xml":
+            cid = b.get("case_id"); xml_text = b.get("xml","")
+            target = re.sub(r"\D","",b.get("target_number",""))
+            def number_matches(addr):
+                if not target: return True
+                # Split on ~ for MMS group threads, strip non-digits from each part
+                parts = [re.sub(r"\D","",p) for p in addr.split("~")]
+                # Match last 10 digits to handle +1 country code variants
+                return any(p.endswith(target) or target.endswith(p) for p in parts if p)
+            try:
+                # Strip BOM and clean up encoding issues common in SMS backup files
+                if isinstance(xml_text, str):
+                    xml_text = xml_text.lstrip('\ufeff').strip()
+                # Remove any invalid XML characters that crash the parser
+                xml_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', xml_text)
+                # If file is very large, warn but proceed
+                root = ET.fromstring(xml_text)
+                msgs = []
+                # Handle SMS messages
+                for msg in root.findall(".//sms"):
+                    text = msg.get("body","").strip()
+                    addr = msg.get("address","")
+                    dms = msg.get("date")
+                    contact = msg.get("contact_name","")
+                    if not text: continue
+                    if not number_matches(addr): continue
+                    dt = None
+                    if dms:
+                        try: dt = datetime.fromtimestamp(int(dms)/1000).strftime("%Y-%m-%d %H:%M:%S")
+                        except: pass
+                    source_label = f"{contact} ({addr})" if contact and contact != addr else addr
+                    tags = scan_patterns(text)
+                    msgs.append((cid, text, source_label, dt, tags[0][0] if tags else "Message", bool(tags)))
+                # Handle MMS messages â€” text is in <part> elements, not body attribute
+                for msg in root.findall(".//mms"):
+                    addr = msg.get("address","")
+                    dms = msg.get("date")
+                    contact = msg.get("contact_name","")
+                    if not number_matches(addr): continue
+                    dt = None
+                    if dms:
+                        try: dt = datetime.fromtimestamp(int(dms)/1000).strftime("%Y-%m-%d %H:%M:%S")
+                        except: pass
+                    # Extract text from parts
+                    parts_text = []
+                    for part in msg.findall(".//part"):
+                        ct = part.get("ct","")
+                        if "text" in ct:
+                            part_data = part.get("text","").strip()
+                            if part_data and part_data != "null":
+                                parts_text.append(part_data)
+                    # Also check body attribute as fallback
+                    body = msg.get("body","").strip()
+                    if body and body != "null":
+                        parts_text.append(body)
+                    text = " | ".join(parts_text).strip()
+                    if not text: continue
+                    source_label = f"{contact} ({addr})" if contact and contact != addr else addr
+                    tags = scan_patterns(text)
+                    msgs.append((cid, text, source_label, dt, tags[0][0] if tags else "Message (MMS)", bool(tags)))
+                conn = get_db()
+                flagged = 0
+                try:
+                    conn.execute("BEGIN")
+                    for cid_,content,source,event_date,category,has_tag in msgs:
+                        conn.execute("INSERT INTO evidence (case_id,content,source,event_date,category,confirmed) VALUES (?,?,?,?,?,0)",
+                            (cid_,content,source,event_date,category))
+                        if has_tag: flagged += 1
+                    conn.commit()
+                except Exception as ex:
+                    conn.rollback(); conn.close()
+                    self.send_json({"error": f"Import failed mid-way, rolled back: {ex}"}, 500); return
+                conn.close()
+                self.send_json({"imported":len(msgs),"flagged":flagged}); return
+            except ET.ParseError as e:
+                self.send_json({"error": f"XML parse error: {str(e)}. Make sure the file is a valid SMS Backup & Restore XML export."}, 400); return
+            except Exception as e:
+                self.send_json({"error":str(e)},400); return
+
+        # â”€â”€ Timeline event â”€â”€
+        if path == "/api/timeline":
+            conn = get_db()
+            c = conn.execute(
+                "INSERT INTO timeline_events (case_id,event_date,title,description,category,importance) VALUES (?,?,?,?,?,?)",
+                (b["case_id"],b.get("event_date"),b.get("title"),b.get("description"),b.get("category","Event"),b.get("importance","normal"))
+            )
+            conn.commit(); conn.close(); self.send_json({"id":c.lastrowid}); return
+
+        if re.match(r"^/api/timeline/\d+$", path):
+            conn = get_db()
+            conn.execute("DELETE FROM timeline_events WHERE id=?", (int(path.split("/")[3]),))
+            conn.commit(); conn.close(); self.send_json({"ok":True}); return
+
+        # â”€â”€ Financial entry â”€â”€
+        if path == "/api/financials":
+            conn = get_db()
+            c = conn.execute(
+                "INSERT INTO financials (case_id,entry_date,description,amount,category,direction) VALUES (?,?,?,?,?,?)",
+                (b["case_id"],b.get("entry_date"),b.get("description"),b.get("amount",0),b.get("category"),b.get("direction","expense"))
+            )
+            conn.commit(); conn.close(); self.send_json({"id":c.lastrowid}); return
+
+        if re.match(r"^/api/financials/\d+$", path):
+            conn = get_db()
+            conn.execute("DELETE FROM financials WHERE id=?", (int(path.split("/")[3]),))
+            conn.commit(); conn.close(); self.send_json({"ok":True}); return
+
+        # â”€â”€ Deadlines â”€â”€
+        if path == "/api/deadlines":
+            conn = get_db()
+            c = conn.execute(
+                "INSERT INTO deadlines (case_id,due_date,title,description) VALUES (?,?,?,?)",
+                (b["case_id"],b.get("due_date"),b.get("title"),b.get("description",""))
+            )
+            conn.commit(); conn.close(); self.send_json({"id":c.lastrowid}); return
+
+        if re.match(r"^/api/deadlines/\d+/complete$", path):
+            conn = get_db()
+            conn.execute("UPDATE deadlines SET completed=? WHERE id=?", (b.get("completed",1), int(path.split("/")[3])))
+            conn.commit(); conn.close(); self.send_json({"ok":True}); return
+
+        if re.match(r"^/api/deadlines/\d+$", path):
+            conn = get_db()
+            conn.execute("DELETE FROM deadlines WHERE id=?", (int(path.split("/")[3]),))
+            conn.commit(); conn.close(); self.send_json({"ok":True}); return
+
+        # â”€â”€ Upload evidence file (PDF, image, etc.) â”€â”€
+        if path == "/api/upload-file":
+            import base64, uuid
+            cid           = b.get("case_id")
+            filename      = b.get("filename", "file")
+            data_b64      = b.get("data", "")
+            event_date    = b.get("event_date", "")
+            notes         = b.get("notes", "")
+            category      = b.get("category", "Document")
+            try:
+                file_bytes = base64.b64decode(data_b64)
+            except Exception as e:
+                self.send_json({"error": f"Bad file data: {e}"}, 400); return
+            # Enforce 50 MB per-file cap
+            if len(file_bytes) > 50 * 1024 * 1024:
+                self.send_json({"error": "File exceeds 50 MB limit."}, 400); return
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+            # Whitelist safe extensions
+            ALLOWED_EXT = {"pdf","jpg","jpeg","png","gif","webp","heic","mp4","mov","mp3","m4a","txt"}
+            if ext not in ALLOWED_EXT:
+                self.send_json({"error": f"File type '.{ext}' is not allowed."}, 400); return
+            safe_name = f"{uuid.uuid4().hex}.{ext}"
+            dest = os.path.join(UPLOADS_DIR, safe_name)
+            with open(dest, "wb") as f_out:
+                f_out.write(file_bytes)
+            conn = get_db()
+            en = assign_exhibit_number(conn, cid)
+            c = conn.execute(
+                "INSERT INTO evidence (case_id,exhibit_number,content,source,event_date,category,confirmed,notes,file_path,file_type,original_filename) VALUES (?,?,?,?,?,?,1,?,?,?,?)",
+                (cid, en, f"[Attached file: {filename}]", filename, event_date, category, notes, f"/uploads/{safe_name}", ext, filename)
+            )
+            conn.commit(); conn.close()
+            self.send_json({"id": c.lastrowid, "file_path": f"/uploads/{safe_name}"}); return
+
+        # â”€â”€ AI Chat â”€â”€
+        if path == "/api/chat":
+            cid = b.get("case_id"); msg = b.get("message","")
+            conn = get_db()
+            # Fetch recent history â€” cap at 40 turns (20 exchanges) to bound context cost
+            history = conn.execute(
+                "SELECT role,content FROM chat_history WHERE case_id=? ORDER BY created_at ASC",
+                (cid,)
+            ).fetchall()
+            MAX_HISTORY = 40
+            if len(history) > MAX_HISTORY:
+                history = history[-MAX_HISTORY:]
+            conn.close()
+            # Pass the user's message as query context for RAG-style evidence ranking
+            system, _am = build_case_system(cid, user_query=msg)
+            messages = [{"role":r["role"],"content":r["content"]} for r in history]
+            messages.append({"role":"user","content":msg})
+            # Route simple/short messages to Haiku; complex/drafting tasks to Sonnet
+            use_model = "claude-haiku-4-5-20251001" if len(msg) < 120 and not any(
+                kw in msg.lower() for kw in ["draft","motion","generate","write","document","hearing prep"]
+            ) else "claude-sonnet-4-20250514"
+            reply = call_claude(messages, system, max_tokens=2500, model=use_model)
+            reply = reply + "\n\n---\n*SynJuris provides legal information and organizational tools only â€” not legal advice. This output does not constitute legal counsel and does not create an attorney-client relationship. Always consult a licensed attorney before filing any document with a court. SynJuris is not a law firm.*"
+            if _am: log_audit_event(cid,"CHAT","chat",_am["snapshot"],_am["prompt_inputs"],_am["snapshot"]["hash"])
+            conn = get_db()
+            conn.execute("INSERT INTO chat_history (case_id,role,content) VALUES (?,?,?)", (cid,"user",msg))
+            conn.execute("INSERT INTO chat_history (case_id,role,content) VALUES (?,?,?)", (cid,"assistant",reply))
+            conn.commit(); conn.close()
+            self.send_json({"reply":reply}); return
+
+        # â”€â”€ Generate document â”€â”€
+        if path == "/api/generate-doc":
+            cid = b.get("case_id"); dtype = b.get("doc_type"); instr = b.get("instructions","")
+            conn = get_db()
+            case     = conn.execute("SELECT * FROM cases WHERE id=?", (cid,)).fetchone()
+            parties  = conn.execute("SELECT * FROM parties WHERE case_id=?", (cid,)).fetchall()
+            evidence = conn.execute("SELECT exhibit_number,content,category,event_date FROM evidence WHERE case_id=? AND confirmed=1 ORDER BY event_date ASC", (cid,)).fetchall()
+            conn.close()
+            c = dict(case) if case else {}
+            ev_lines = "\n".join([f"[{e['exhibit_number']}] [{e['event_date'] or 'undated'}] ({e['category']}): {(e['content'] or '')[:300]}" for e in evidence[:25]])
+            party_lines = "\n".join([f"  {p['role']}: {p['name']}" for p in parties])
+            jur_block = jurisdiction_statute_block(c.get('jurisdiction',''))
+            prompt = f"""Draft a complete {dtype} for a pro se litigant.
+
+CASE DETAILS
+  Title: {c.get('title')}
+  Type: {c.get('case_type')}
+  {jur_block}
+  Court: {c.get('court_name') or '[COURT NAME]'}
+  Case number: {c.get('case_number') or '[CASE NUMBER]'}
+
+PARTIES
+{party_lines or '  [PARTIES NOT ENTERED]'}
+
+CONFIRMED EVIDENCE
+{ev_lines or '  None confirmed.'}
+
+SPECIAL INSTRUCTIONS
+{instr or 'None.'}
+
+FORMAT REQUIREMENTS:
+- Use proper court document format with caption, title, body, and signature block
+- Use [BRACKET PLACEHOLDERS] for any information not provided above
+- Write in clear, plain English
+- Include specific references to evidence by exhibit number where relevant
+- Add a certificate of service at the end
+- This is for a pro se filer â€” make it professional but accessible"""
+            content = call_claude([{"role":"user","content":prompt}], max_tokens=3000)
+            # Verify any case citations against CourtListener (non-blocking â€” warnings appended)
+            citations = verify_citations_in_text(content)
+            conn = get_db()
+            c2 = conn.execute("INSERT INTO documents (case_id,title,doc_type,content) VALUES (?,?,?,?)",
+                (cid, f"{dtype} â€” {datetime.now().strftime('%b %d %Y')}", dtype, content))
+            conn.commit(); conn.close()
+            self.send_json({"id":c2.lastrowid,"content":content,"citations":citations}); return
+
+        # â”€â”€ Generate hearing prep â”€â”€
+        if path == "/api/hearing-prep":
+            cid = b.get("case_id")
+            system, _am = build_case_system(cid)
+            prompt = """Generate a comprehensive hearing preparation and organization guide for this pro se litigant. This is an organizational tool to help them understand the process and prepare their materials â€” not legal advice. Include:
+
+1. OPENING STATEMENT DRAFT (60 seconds, clear and factual)
+2. KEY POINTS TO MAKE (numbered, in order of importance)
+3. YOUR EVIDENCE SUMMARY (how to introduce each exhibit)
+4. ANTICIPATED ARGUMENTS FROM OTHER SIDE (and how to respond)
+5. QUESTIONS TO ASK (if cross-examining the other party or witnesses)
+6. WHAT NOT TO SAY (common pro se mistakes to avoid)
+7. COURTROOM ETIQUETTE (how to address the judge, when to stand, etc.)
+8. WHAT TO BRING (complete checklist)
+9. IF THE JUDGE ASKS YOU... (common judicial questions and suggested answers)
+10. EMERGENCY FALLBACK (if things go badly, what to say/do)
+
+Be specific to THIS case and THIS jurisdiction. Use plain English throughout."""
+            reply = call_claude([{"role":"user","content":prompt}], system, max_tokens=3000)
+            reply = reply + "\n\n---\n*SynJuris provides legal information and organizational tools only â€” not legal advice. This output does not constitute legal counsel and does not create an attorney-client relationship. Always consult a licensed attorney before filing any document with a court. SynJuris is not a law firm.*"
+            if _am: log_audit_event(cid,"HEARING_PREP","hearing-prep",_am["snapshot"],_am["prompt_inputs"],_am["snapshot"]["hash"])
+            conn = get_db()
+            conn.execute("INSERT INTO documents (case_id,title,doc_type,content) VALUES (?,?,?,?)",
+                (cid, f"Hearing Prep Guide â€” {datetime.now().strftime('%b %d %Y')}", "Hearing Prep Guide", reply))
+            conn.commit(); conn.close()
+            self.send_json({"content":reply}); return
+
+        # â”€â”€ Phase 2: Evidence â†’ Argument Mapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/build-arguments":
+            cid = b.get("case_id")
+            conn = get_db()
+            case     = conn.execute("SELECT * FROM cases WHERE id=?", (cid,)).fetchone()
+            evidence = conn.execute(
+                "SELECT exhibit_number,content,category,event_date FROM evidence WHERE case_id=? AND confirmed=1 ORDER BY event_date ASC",
+                (cid,)
+            ).fetchall()
+            conn.close()
+            if not case or not evidence:
+                self.send_json({"error":"No confirmed evidence to build arguments from."}); return
+            c = dict(case)
+            jur_block = jurisdiction_statute_block(c.get("jurisdiction",""))
+            ev_lines = "\n".join([
+                f"  [{e['exhibit_number'] or 'unnum'}] [{e['event_date'] or 'undated'}] ({e['category']}): {(e['content'] or '')[:250]}"
+                for e in evidence
+            ])
+            prompt = f"""You are a legal preparation assistant helping a pro se litigant organize their evidence by legal issue so they can clearly present their situation to a court.
+
+CASE: {c.get("title")} | Type: {c.get("case_type")} | {jur_block}
+
+CONFIRMED EVIDENCE:
+{ev_lines}
+
+Your task: Organize this evidence by legal issue, grouping related exhibits together and identifying what each group of evidence documents. You are helping the person understand what their evidence shows â€” not advising them on legal strategy.
+
+Respond in this EXACT JSON format (no markdown, no preamble, valid JSON only):
+{{
+  "arguments": [
+    {{
+      "title": "Short issue title (e.g. Repeated Interference with Parenting Time)",
+      "legal_basis": "The relevant law or statute that may apply to this issue",
+      "strength": "strong|moderate|weak",
+      "exhibits": ["Exhibit 1", "Exhibit 3"],
+      "argument": "2-3 sentence plain-English summary of what this evidence shows",
+      "anticipate": "One sentence: a possible counter-claim the other side might raise",
+      "counter": "One sentence: how you might address that counter-claim"
+    }}
+  ],
+  "strongest_issue": "Title of the issue best supported by your evidence",
+  "case_theme": "One sentence that captures what your evidence collectively shows",
+  "evidence_gaps": ["Any documentation that appears to be missing that would help clarify the situation"]
+}}
+
+Organize as many issues as the evidence supports. Be specific about which exhibits relate to each issue. Remember: you are organizing facts, not providing legal advice."""
+
+            result = call_claude([{"role":"user","content":prompt}], max_tokens=3000)
+            # try to parse as JSON; fall back to raw text
+            try:
+                import json as _json
+                cleaned = result.strip()
+                if cleaned.startswith("```"):
+                    cleaned = "\n".join(cleaned.split("\n")[1:-1])
+                parsed = _json.loads(cleaned)
+                self.send_json(parsed); return
+            except Exception:
+                self.send_json({"raw": result}); return
+
+        # â”€â”€ Phase 2: Timeline Contradiction Detector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/detect-contradictions":
+            cid = b.get("case_id")
+            conn = get_db()
+            case     = conn.execute("SELECT * FROM cases WHERE id=?", (cid,)).fetchone()
+            evidence = conn.execute(
+                "SELECT exhibit_number,content,category,event_date FROM evidence WHERE case_id=? AND confirmed=1 ORDER BY event_date ASC",
+                (cid,)
+            ).fetchall()
+            timeline = conn.execute(
+                "SELECT event_date,title,description FROM timeline_events WHERE case_id=? ORDER BY event_date ASC",
+                (cid,)
+            ).fetchall()
+            conn.close()
+            if not case: self.send_json({"error":"Case not found"}); return
+            c = dict(case)
+            ev_lines = "\n".join([
+                f"  [{e['exhibit_number'] or 'unnum'}] [{e['event_date'] or 'undated'}] ({e['category']}): {(e['content'] or '')[:200]}"
+                for e in evidence
+            ])
+            tl_lines = "\n".join([
+                f"  [{t['event_date'] or 'undated'}]: {t['title']} â€” {(t['description'] or '')[:150]}"
+                for t in timeline
+            ])
+            prompt = f"""Analyze this case timeline and evidence for a pro se litigant.
+
+CASE: {c.get("title")} | {c.get("case_type")} | {c.get("jurisdiction")}
+
+EVIDENCE:
+{ev_lines or "  None"}
+
+TIMELINE EVENTS:
+{tl_lines or "  None"}
+
+Respond in this EXACT JSON format (valid JSON only, no markdown):
+{{
+  "contradictions": [
+    {{
+      "type": "gap|overlap|inconsistency|missing_response",
+      "severity": "high|medium|low",
+      "description": "Plain English description of the issue",
+      "dates_involved": ["2024-03-01", "2024-03-15"],
+      "exhibits_involved": ["Exhibit 2", "Exhibit 4"],
+      "recommendation": "What the litigant should do about this"
+    }}
+  ],
+  "timeline_gaps": ["Description of any significant time periods with no documentation"],
+  "strongest_period": "The date range where your evidence is strongest",
+  "weakest_period": "The date range where your evidence is thinnest",
+  "overall_assessment": "2-3 sentence plain-English assessment of the timeline's strength"
+}}"""
+
+            result = call_claude([{"role":"user","content":prompt}], max_tokens=2000)
+            try:
+                import json as _json
+                cleaned = result.strip()
+                if cleaned.startswith("```"):
+                    cleaned = "\n".join(cleaned.split("\n")[1:-1])
+                parsed = _json.loads(cleaned)
+                self.send_json(parsed); return
+            except Exception:
+                self.send_json({"raw": result}); return
+
+        # â”€â”€ Phase 3: PDF Export â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/export-pdf$", path):
+            cid = int(path.split("/")[3])
+            fname, pdf_bytes = export_evidence_pdf(cid)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", len(pdf_bytes))
+            self.end_headers(); self.wfile.write(pdf_bytes); return
+
+        # â”€â”€ Case Readiness Report PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/cases/\d+/readiness-pdf$", path):
+            uid = require_auth(self)
+            if not uid: return
+            cid = int(path.split("/")[3])
+            fname, pdf_bytes = export_readiness_pdf(cid, uid)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", len(pdf_bytes))
+            self.end_headers(); self.wfile.write(pdf_bytes); return
+
+        # â”€â”€ DOCX document export â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if re.match(r"^/api/documents/\d+/docx$", path):
+            uid = require_auth(self)
+            if not uid: return
+            doc_id = int(path.split("/")[3])
+            conn = get_db()
+            doc = conn.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+            conn.close()
+            if not doc:
+                self.send_json({"error":"not found"}, 404); return
+            fname, docx_bytes = export_document_docx(dict(doc))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            self.send_header("Content-Disposition", f'attachment; filename="{fname}"')
+            self.send_header("Content-Length", len(docx_bytes))
+            self.end_headers(); self.wfile.write(docx_bytes); return
+
+        # â”€â”€ Phase 4: Adversarial Simulation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/adversarial":
+            cid = b.get("case_id")
+            system, _am = build_case_system(cid)
+            conn = get_db()
+            case = conn.execute("SELECT * FROM cases WHERE id=?", (cid,)).fetchone()
+            conn.close()
+            if not case: self.send_json({"error":"Case not found"}); return
+            prompt = f"""You are simulating opposing counsel in a {dict(case).get("case_type","legal")} case.
+Your job is to help the pro se litigant PREPARE by showing them exactly what they are up against.
+
+Respond in this EXACT JSON format (valid JSON only, no markdown):
+{{
+  "opposing_strategy": "2-3 sentence summary of what opposing counsel\'s overall strategy will likely be",
+  "attacks": [
+    {{
+      "argument": "A specific argument or claim the other side may raise",
+      "strength": "strong|moderate|weak",
+      "target": "What part of your case this attacks",
+      "counter": "How to respond to this in plain English",
+      "evidence_needed": "What evidence would best defeat this argument"
+    }}
+  ],
+  "your_vulnerabilities": ["List of the weakest points in the pro se litigant\'s case"],
+  "their_vulnerabilities": ["List of weaknesses in the opposing party\'s likely position"],
+  "settlement_leverage": "What leverage the pro se litigant has if settlement is discussed",
+  "key_warning": "The single most important thing to watch out for at the hearing"
+}}"""
+            result = call_claude([{"role":"user","content":prompt}], system, max_tokens=2500)
+            if _am: log_audit_event(cid,"ADVERSARIAL","adversarial",_am["snapshot"],_am["prompt_inputs"],_am["snapshot"]["hash"])
+            if _am: log_audit_event(cid,"CASE_THEORY","case-theory",_am["snapshot"],_am["prompt_inputs"],_am["snapshot"]["hash"])
+            try:
+                import json as _json
+                cleaned = result.strip()
+                if cleaned.startswith("```"):
+                    cleaned = "\n".join(cleaned.split("\n")[1:-1])
+                parsed = _json.loads(cleaned)
+                self.send_json(parsed); return
+            except Exception:
+                self.send_json({"raw": result}); return
+
+        # â”€â”€ Phase 4: Case Theory Builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/case-theory":
+            cid = b.get("case_id")
+            system, _am = build_case_system(cid)
+            conn = get_db()
+            case = conn.execute("SELECT * FROM cases WHERE id=?", (cid,)).fetchone()
+            conn.close()
+            if not case: self.send_json({"error":"Case not found"}); return
+            c = dict(case)
+            prompt = f"""Help this pro se litigant organize their case facts and identify the legal issues relevant to their situation.
+
+Respond in this EXACT JSON format (valid JSON only, no markdown):
+{{
+  "one_sentence_theory": "One sentence summarizing what happened, what legal issue is involved, and what outcome you are seeking",
+  "narrative": "3-5 sentence plain-English story of what happened, in chronological order, that a judge can immediately understand",
+  "what_you_are_asking_for": "Specific relief requested, in plain English",
+  "legal_theories": [ /* relevant legal issues and what would need to be shown */
+    {{
+      "theory": "Name of the relevant legal issue (e.g. Interference with Custody, Breach of Parenting Plan)",
+      "elements": ["Key fact 1 that would support your position", "Key fact 2 that would support your position"],
+      "how_you_prove_it": "Which of your evidence documents supports this issue",
+      "statute": "The specific statute if applicable"
+    }}
+  ],
+  "burden_of_proof": "What standard applies in this case and what it means practically",
+  "best_outcome": "The best realistic outcome if the hearing goes well",
+  "acceptable_outcome": "A fair compromise outcome",
+  "worst_case": "What happens if the hearing goes poorly and how to mitigate it",
+  "opening_line": "The exact first sentence to say when given the floor at the hearing"
+}}"""
+            result = call_claude([{"role":"user","content":prompt}], system, max_tokens=2500)
+            try:
+                import json as _json
+                cleaned = result.strip()
+                if cleaned.startswith("```"):
+                    cleaned = "\n".join(cleaned.split("\n")[1:-1])
+                parsed = _json.loads(cleaned)
+                self.send_json(parsed); return
+            except Exception:
+                self.send_json({"raw": result}); return
+
+        # â”€â”€ Audit verify â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/audit/verify":
+            aid = b.get("audit_id")
+            if not aid: self.send_json({"error":"audit_id required"},400); return
+            self.send_json(verify_audit_entry(int(aid))); return
+
+        # â”€â”€ Case Roadmap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/roadmap":
+            uid = require_auth(self)
+            if not uid: return
+            cid = b.get("case_id")
+            conn = get_db()
+            case = conn.execute("SELECT * FROM cases WHERE id=? AND user_id=?", (cid, uid)).fetchone()
+            if not case: conn.close(); self.send_json({"error":"Case not found"}, 404); return
+            c = dict(case)
+            deadlines = conn.execute("SELECT title,due_date,completed FROM deadlines WHERE case_id=? ORDER BY due_date ASC", (cid,)).fetchall()
+            docs = conn.execute("SELECT doc_type FROM documents WHERE case_id=?", (cid,)).fetchall()
+            ev_count = conn.execute("SELECT COUNT(*) FROM evidence WHERE case_id=? AND confirmed=1", (cid,)).fetchone()[0]
+            conn.close()
+            dl_text = "\n".join(f"  {'âœ“' if d['completed'] else 'â—‹'} {d['title']} â€” {d['due_date'] or 'no date'}" for d in deadlines) or "  None yet"
+            doc_types = [d["doc_type"] for d in docs]
+            jur_block = jurisdiction_statute_block(c.get("jurisdiction",""))
+            county = c.get("court_name","").strip()
+            prompt = f"""You are a legal case roadmap assistant for a pro se litigant.
+
+CASE: {c['title']}
+Type: {c.get('case_type','Unknown')}
+Jurisdiction: {c.get('jurisdiction','')}
+County/Court: {county or 'Not specified'}
+Case Number: {c.get('case_number','Not yet assigned')}
+Hearing Date: {c.get('hearing_date','Not scheduled')}
+Confirmed Evidence: {ev_count} items
+Documents Generated: {', '.join(doc_types) if doc_types else 'None'}
+Deadlines:
+{dl_text}
+
+{jur_block}
+
+Generate a BRANCHING case roadmap specific to this person's situation. Respond ONLY in this exact JSON format (no markdown):
+{{
+  "current_stage": "Plain English name of where they are right now",
+  "stage_number": <1-10 integer>,
+  "total_stages": <integer>,
+  "stage_description": "2-3 sentence description of what this stage means",
+  "completed_steps": [
+    {{"step": "What has been done", "notes": "Brief context"}}
+  ],
+  "immediate_next_steps": [
+    {{
+      "priority": "urgent|important|optional",
+      "action": "Specific action to take",
+      "deadline": "When this must be done or null",
+      "how_to": "Plain English instructions for how to do this",
+      "form_needed": "Name of form or document needed, or null",
+      "county_note": "Any county-specific procedure note if known, or null"
+    }}
+  ],
+  "upcoming_stages": [
+    {{
+      "stage": "Stage name",
+      "description": "What happens in this stage",
+      "key_actions": ["action 1", "action 2"]
+    }}
+  ],
+  "branch_points": [
+    {{
+      "decision": "A key decision or event that will change the path",
+      "if_yes": "What happens if yes / outcome A",
+      "if_no": "What happens if no / outcome B"
+    }}
+  ],
+  "local_resources": "Any county-specific court resources, self-help centers, or local rules if known",
+  "warning": "The single most important thing NOT to miss right now, or null"
+}}"""
+            result = call_claude([{"role":"user","content":prompt}], max_tokens=3000)
+            try:
+                import json as _j
+                cleaned = result.strip()
+                if cleaned.startswith("```"): cleaned = "\n".join(cleaned.split("\n")[1:-1])
+                self.send_json(_j.loads(cleaned)); return
+            except Exception:
+                self.send_json({"raw": result}); return
+
+        # â”€â”€ Motion Templates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/motion-template":
+            uid = require_auth(self)
+            if not uid: return
+            cid = b.get("case_id"); motion_type = b.get("motion_type","")
+            conn = get_db()
+            case = conn.execute("SELECT * FROM cases WHERE id=? AND user_id=?", (cid, uid)).fetchone()
+            if not case: conn.close(); self.send_json({"error":"Case not found"}, 404); return
+            c = dict(case)
+            parties = conn.execute("SELECT * FROM parties WHERE case_id=?", (cid,)).fetchall()
+            ev = conn.execute("SELECT exhibit_number,content,category,event_date FROM evidence WHERE case_id=? AND confirmed=1 ORDER BY event_date ASC", (cid,)).fetchall()
+            conn.close()
+            jur_block = jurisdiction_statute_block(c.get("jurisdiction",""))
+            parties_text = "\n".join(f"  {p['role']}: {p['name']}" for p in parties) or "  Not specified"
+            ev_text = "\n".join(f"  Exhibit {e['exhibit_number'] or '?'} ({e['event_date'] or 'undated'}): {(e['content'] or '')[:100]}" for e in ev[:15]) or "  None confirmed yet"
+            prompt = f"""Draft a complete, properly formatted {motion_type} for a pro se litigant to file with the court.
+
+CASE DETAILS:
+Case Title: {c['title']}
+Case Number: {c.get('case_number','[CASE NUMBER]')}
+Court: {c.get('court_name','[COURT NAME]')}
+Jurisdiction: {c.get('jurisdiction','')}
+{jur_block}
+
+PARTIES:
+{parties_text}
+
+CONFIRMED EVIDENCE AVAILABLE:
+{ev_text}
+
+INSTRUCTIONS:
+- Use proper legal formatting with caption, title, numbered paragraphs, signature block
+- Use [BRACKET PLACEHOLDERS] for any information not provided above
+- Cite specific statutes from the jurisdiction block above where relevant
+- Include a certificate of service at the end
+- Write in plain, clear language appropriate for a pro se filer
+- Include a section referencing supporting evidence where applicable
+- Make it complete enough to actually file â€” not a skeleton"""
+            result = call_claude([{"role":"user","content":prompt}], max_tokens=4000)
+            # Save as document
+            conn = get_db()
+            conn.execute("INSERT INTO documents (case_id,title,doc_type,content) VALUES (?,?,?,?)",
+                (cid, motion_type, motion_type, result))
+            conn.commit(); conn.close()
+            self.send_json({"content": result, "saved": True}); return
+
+        # â”€â”€ Co-parenting Communication Log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/comms":
+            uid = require_auth(self)
+            if not uid: return
+            cid = b.get("case_id")
+            conn = get_db()
+            case = conn.execute("SELECT id FROM cases WHERE id=? AND user_id=?", (cid, uid)).fetchone()
+            if not case: conn.close(); self.send_json({"error":"not found"}, 404); return
+            # Add communication entry
+            entry_date = b.get("entry_date"); channel = b.get("channel","")
+            content = b.get("content",""); direction = b.get("direction","received")
+            other_party = b.get("other_party","")
+            tags = scan_patterns(content)
+            flagged = bool(tags)
+            category = tags[0][0] if tags else "Communication"
+            confidence = tags[0][2] if tags else None
+            # Store as evidence with source indicating it's a comm log entry
+            source = f"Comm Log â€” {channel} â€” {other_party}" if other_party else f"Comm Log â€” {channel}"
+            c = conn.execute(
+                "INSERT INTO evidence (case_id,content,source,event_date,category,confirmed,notes) VALUES (?,?,?,?,?,0,?)",
+                (cid, content, source, entry_date, category, f"Direction: {direction} | Channel: {channel}")
+            )
+            conn.commit(); conn.close()
+            self.send_json({"id": c.lastrowid, "flagged": flagged, "flags": [t[0] for t in tags], "confidence": confidence}); return
+
+        # â”€â”€ Child Support Calculator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/child-support":
+            uid = require_auth(self)
+            if not uid: return
+            cid = b.get("case_id")
+            conn = get_db()
+            case = conn.execute("SELECT * FROM cases WHERE id=? AND user_id=?", (cid, uid)).fetchone()
+            if not case: conn.close(); self.send_json({"error":"not found"}, 404); return
+            c = dict(case)
+            conn.close()
+            jur_block = jurisdiction_statute_block(c.get("jurisdiction",""))
+            your_income = b.get("your_income", 0)
+            their_income = b.get("their_income", 0)
+            children = b.get("children", 1)
+            custody_split = b.get("custody_split", "50/50")
+            your_expenses = b.get("your_expenses", "")
+            prompt = f"""Calculate child support for a pro se litigant using the correct formula for their jurisdiction.
+
+Jurisdiction: {c.get('jurisdiction','')}
+{jur_block}
+
+INPUT DATA:
+- Your gross monthly income: ${your_income}
+- Other parent gross monthly income: ${their_income}
+- Number of children: {children}
+- Custody arrangement: {custody_split}
+- Your additional expenses (healthcare, childcare, etc): {your_expenses or 'None provided'}
+
+Respond ONLY in this exact JSON format (no markdown):
+{{
+  "formula_used": "Name of the formula/model used in this state (e.g. Income Shares, Percentage of Income)",
+  "statute": "Relevant statute citation",
+  "estimated_amount": <monthly dollar amount as number>,
+  "direction": "you pay" or "you receive",
+  "calculation_steps": [
+    {{"step": "Step description", "value": "Result of this step"}}
+  ],
+  "factors_that_could_change_this": ["factor 1", "factor 2"],
+  "how_to_request": "How to formally request child support in this jurisdiction",
+  "worksheet_note": "Note about official state worksheet if available",
+  "disclaimer": "This is an estimate only. Always verify with the court or an attorney."
+}}"""
+            result = call_claude([{"role":"user","content":prompt}], max_tokens=2000)
+            try:
+                import json as _j
+                cleaned = result.strip()
+                if cleaned.startswith("```"): cleaned = "\n".join(cleaned.split("\n")[1:-1])
+                parsed = _j.loads(cleaned)
+                # Save to financials
+                conn = get_db()
+                conn.execute("INSERT INTO financials (case_id,entry_date,description,amount,category,direction) VALUES (?,date('now'),?,?,?,?)",
+                    (cid, f"Child Support Estimate ({children} child{'ren' if children>1 else ''}, {custody_split})",
+                     parsed.get("estimated_amount",0), "Child Support", parsed.get("direction","unknown")))
+                conn.commit(); conn.close()
+                self.send_json(parsed); return
+            except Exception:
+                self.send_json({"raw": result}); return
+
+        # â”€â”€ Set user tier (self-upgrade) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/me/tier":
+            uid = require_auth(self)
+            if not uid: return
+            tier = b.get("tier","pro_se")
+            if tier not in ("pro_se","attorney"):
+                self.send_json({"error":"invalid tier"},400); return
+            conn = get_db()
+            conn.execute("UPDATE users SET tier=? WHERE id=?", (tier, uid))
+            conn.commit(); conn.close()
+            self.send_json({"ok":True,"tier":tier}); return
+
+        # â”€â”€ Portal: create access token for a case â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/portal/create":
+            uid = require_attorney(self)
+            if not uid: return
+            cid   = b.get("case_id")
+            label = b.get("label","Client")
+            # Verify ownership
+            conn = get_db()
+            case = conn.execute("SELECT id FROM cases WHERE id=? AND user_id=?", (cid,uid)).fetchone()
+            if not case:
+                conn.close(); self.send_json({"error":"not found"},404); return
+            import secrets as _sec
+            token = _sec.token_urlsafe(32)
+            conn.execute(
+                "INSERT INTO portal_tokens (token,case_id,attorney_user_id,label,expires_at) "
+                "VALUES (?,?,?,?,datetime('now','+90 days'))",
+                (token, cid, uid, label)
+            )
+            conn.commit(); conn.close()
+            portal_url = f"http://localhost:{PORT}/portal/{token}"
+            self.send_json({"token": token, "url": portal_url, "label": label}); return
+
+        # â”€â”€ Portal: list tokens for a case â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/portal/list":
+            uid = require_attorney(self)
+            if not uid: return
+            cid = b.get("case_id")
+            conn = get_db()
+            rows = conn.execute(
+                "SELECT id,token,label,created_at,expires_at FROM portal_tokens "
+                "WHERE case_id=? AND attorney_user_id=? ORDER BY created_at DESC",
+                (cid, uid)
+            ).fetchall()
+            conn.close()
+            self.send_json([dict(r) for r in rows]); return
+
+        # â”€â”€ Portal: revoke token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/portal/revoke":
+            uid = require_attorney(self)
+            if not uid: return
+            tid = b.get("token_id")
+            conn = get_db()
+            conn.execute("DELETE FROM portal_tokens WHERE id=? AND attorney_user_id=?", (tid,uid))
+            conn.commit(); conn.close()
+            self.send_json({"ok":True}); return
+
+        # â”€â”€ Portal: approve submitted evidence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/portal/approve":
+            uid = require_attorney(self)
+            if not uid: return
+            peid = b.get("portal_evidence_id")
+            note = b.get("attorney_note","")
+            conn = get_db()
+            pe = conn.execute("SELECT * FROM portal_evidence WHERE id=?", (peid,)).fetchone()
+            if not pe:
+                conn.close(); self.send_json({"error":"not found"},404); return
+            # Promote to main evidence table
+            conn.execute("BEGIN")
+            try:
+                en = assign_exhibit_number(conn, pe["case_id"])
+                conn.execute(
+                    "INSERT INTO evidence (case_id,exhibit_number,content,source,event_date,category,confirmed,notes) "
+                    "VALUES (?,?,?,?,?,?,1,?)",
+                    (pe["case_id"], en, pe["content"], pe["source"], pe["event_date"],
+                     pe["category"], f"Submitted via client portal. Attorney note: {note}" if note else "Submitted via client portal.")
+                )
+                conn.execute("UPDATE portal_evidence SET approved=1, attorney_note=? WHERE id=?", (note, peid))
+                # Auto-generate time entry for review
+                conn.execute(
+                    "INSERT INTO time_entries (case_id,user_id,description,hours,source) VALUES (?,?,?,?,?)",
+                    (pe["case_id"], uid, f"Reviewed and approved client portal submission â€” {pe['category']}", 0.1, "portal-approval")
+                )
+                conn.commit()
+            except Exception as e:
+                conn.rollback(); conn.close()
+                self.send_json({"error":str(e)},500); return
+            conn.close()
+            self.send_json({"ok":True,"exhibit_number":en}); return
+
+        # â”€â”€ Portal: reject submitted evidence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/portal/reject":
+            uid = require_attorney(self)
+            if not uid: return
+            peid = b.get("portal_evidence_id")
+            note = b.get("attorney_note","")
+            conn = get_db()
+            conn.execute("UPDATE portal_evidence SET approved=-1, attorney_note=? WHERE id=?", (note, peid))
+            conn.commit(); conn.close()
+            self.send_json({"ok":True}); return
+
+        # â”€â”€ Time entries: add manual â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/time-entries":
+            uid = require_attorney(self)
+            if not uid: return
+            cid  = b.get("case_id")
+            desc = b.get("description","")
+            hrs  = float(b.get("hours",0))
+            bill = int(b.get("billable",1))
+            conn = get_db()
+            c = conn.execute(
+                "INSERT INTO time_entries (case_id,user_id,description,hours,billable,source) VALUES (?,?,?,?,?,'manual')",
+                (cid, uid, desc, hrs, bill)
+            )
+            conn.commit(); conn.close()
+            self.send_json({"id":c.lastrowid}); return
+
+        # â”€â”€ Time entries: mark exported â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/time-entries/export":
+            uid = require_attorney(self)
+            if not uid: return
+            ids = b.get("ids",[])
+            if not isinstance(ids,list) or not ids:
+                self.send_json({"error":"ids required"},400); return
+            conn = get_db()
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(f"UPDATE time_entries SET exported=1 WHERE id IN ({placeholders}) AND user_id=?",
+                         ids + [uid])
+            conn.commit(); conn.close()
+            self.send_json({"ok":True,"exported":len(ids)}); return
+
+        # â”€â”€ AI: auto-generate time entry from tool use â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if path == "/api/time-entries/auto":
+            uid = require_attorney(self)
+            if not uid: return
+            cid    = b.get("case_id")
+            action = b.get("action","AI analysis")  # e.g. "Argument Builder"
+            hrs    = float(b.get("hours", 0.3))
+            desc   = f"[SynJuris] {action} â€” AI-assisted review and analysis, {hrs:.1f} hr"
+            conn = get_db()
+            c = conn.execute(
+                "INSERT INTO time_entries (case_id,user_id,description,hours,billable,source) VALUES (?,?,?,?,1,'ai-auto')",
+                (cid, uid, desc, hrs)
+            )
+            conn.commit(); conn.close()
+            self.send_json({"id":c.lastrowid,"description":desc,"hours":hrs}); return
+
+        self.send_json({"error":"not found"},404)
+
+
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# CLIENT PORTAL â€” lightweight read/submit page sent to clients
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def build_portal_html(pt, token):
     """Render the client-facing portal page. No framework, self-contained."""
@@ -1004,14 +3029,14 @@ def build_portal_html(pt, token):
 </head>
 <body>
 <h1>SynJuris Client Portal</h1>
-<div class="sub">Case: <strong>{case_title}</strong> &nbsp;·&nbsp; Shared with: {label}</div>
+<div class="sub">Case: <strong>{case_title}</strong> &nbsp;Â·&nbsp; Shared with: {label}</div>
 <p style="font-size:13px;color:#8a9ab0;margin-bottom:20px">
   Use this page to submit documents, messages, or other information to your attorney.
   Your attorney will review everything before it is added to the case.
 </p>
 <div id="form">
   <label>Description / Content</label>
-  <textarea id="p-content" placeholder="Paste the message, describe the incident, or summarize the document…"></textarea>
+  <textarea id="p-content" placeholder="Paste the message, describe the incident, or summarize the documentâ€¦"></textarea>
   <label>Date of Event</label>
   <input type="date" id="p-date">
   <label>Source / Context</label>
@@ -1022,7 +3047,7 @@ def build_portal_html(pt, token):
 </div>
 <div id="status"></div>
 <div class="disc">
-  ⚠ This portal is for submitting evidence to your attorney only. Nothing submitted here
+  âš  This portal is for submitting evidence to your attorney only. Nothing submitted here
   is filed with any court. All submissions are reviewed by your attorney before use.
   This portal does not create an attorney-client relationship and does not constitute
   legal advice. Do not submit information about third parties without their knowledge
@@ -1033,7 +3058,7 @@ async function submitPortal(){{
   const content=document.getElementById('p-content').value.trim();
   if(!content){{alert('Please enter content.');return;}}
   const btn=document.querySelector('.btn');
-  btn.disabled=true; btn.textContent='Submitting…';
+  btn.disabled=true; btn.textContent='Submittingâ€¦';
   try{{
     const r=await fetch('/api/portal/submit',{{method:'POST',
       headers:{{'Content-Type':'application/json'}},
@@ -1044,7 +3069,7 @@ async function submitPortal(){{
     }});
     const d=await r.json();
     if(d.ok){{
-      document.getElementById('form').innerHTML='<div class="notice n-ok">✓ Submitted successfully. Your attorney will review this item.</div>';
+      document.getElementById('form').innerHTML='<div class="notice n-ok">âœ“ Submitted successfully. Your attorney will review this item.</div>';
     }}else{{
       document.getElementById('status').innerHTML=`<div class="notice n-err">Error: ${{d.error||'Unknown error'}}</div>`;
       btn.disabled=false; btn.textContent='Submit to Attorney for Review';
@@ -1059,9 +3084,9 @@ async function submitPortal(){{
 </html>"""
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# REDACTED EXPORT — state vector + arguments, raw evidence stripped
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# REDACTED EXPORT â€” state vector + arguments, raw evidence stripped
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def build_redacted_export(case_id, user_id):
     """Build a JSON payload suitable for redacted PDF export.
@@ -1094,7 +3119,7 @@ def build_redacted_export(case_id, user_id):
     st     = snap["state"]
 
     return {
-        "generated_at": TIMESTAMP.utcnow().isoformat() + "Z",
+        "generated_at": datetime.utcnow().isoformat() + "Z",
         "synjuris_version": VERSION,
         "case": {
             "title":       c.get("title",""),
@@ -1122,7 +3147,6 @@ def build_redacted_export(case_id, user_id):
             "The state vector and interpretation are computational outputs, not legal conclusions."
         ),
     }
-
 
 
 def build_courtroom_html(case_id):
@@ -1196,7 +3220,7 @@ def build_courtroom_html(case_id):
 
 def export_evidence_pdf(case_id):
     """Generate a court-formatted PDF evidence manifest using only stdlib.
-    Returns (filename, bytes). Uses minimal PDF spec — no external deps."""
+    Returns (filename, bytes). Uses minimal PDF spec â€” no external deps."""
     conn = get_db()
     case       = conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
     parties    = conn.execute("SELECT * FROM parties WHERE case_id=?", (case_id,)).fetchall()
@@ -1215,7 +3239,7 @@ def export_evidence_pdf(case_id):
     c = dict(case) if case else {}
     safe = lambda s: str(s or "").replace("\\","\\\\").replace("(","\\(").replace(")","\\)").replace("\r","").replace("\n"," ")
 
-    # ── Build page content streams ──────────────────────────────────────────
+    # â”€â”€ Build page content streams â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     lines = []  # (text, x, y, font, size, color)  color: 0=black 0.3=gray 0.6=blue-ish
 
     def page_header(y, page_num):
@@ -1226,7 +3250,7 @@ def export_evidence_pdf(case_id):
             (f"Generated {date.today().isoformat()}", 520, y-14, "R", 8, 0.5),
         ]
 
-    # We'll build raw PDF manually — portable, zero deps
+    # We'll build raw PDF manually â€” portable, zero deps
     # PDF coordinate system: origin bottom-left, y increases upward
     # Letter page: 612 x 792 pts
 
@@ -1265,7 +3289,7 @@ def export_evidence_pdf(case_id):
             self.cur_y -= 16
             jur = c.get("jurisdiction","")
             ct  = c.get("case_type","")
-            self._text_line(f"{ct}  ·  {jur}  ·  Page {self.page_num}", MARGIN_L, self.cur_y, 8, gray=True)
+            self._text_line(f"{ct}  Â·  {jur}  Â·  Page {self.page_num}", MARGIN_L, self.cur_y, 8, gray=True)
             self.cur_y -= 6
             self._line(MARGIN_L, self.cur_y, PAGE_W-MARGIN_R, self.cur_y, 0.5)
             self.cur_y -= 14
@@ -1377,10 +3401,10 @@ def export_evidence_pdf(case_id):
                 self._write(f"{off:010d} 00000 n \n".encode())
                 seen.add(oid)
 
-            # PDF Info dictionary (Creator, Title, Producer) — aids court e-filing
+            # PDF Info dictionary (Creator, Title, Producer) â€” aids court e-filing
             info_id = all_ids[-1][0] + 1
             doc_title = safe(c.get("title", "SynJuris Evidence Manifest"))
-            info_obj = f"<< /Title ({doc_title}) /Creator (SynJuris) /Producer (SynJuris — synjuris.com) /CreationDate (D:{TIMESTAMP.now().strftime('%Y%m%d%H%M%S')}) >>"
+            info_obj = f"<< /Title ({doc_title}) /Creator (SynJuris) /Producer (SynJuris â€” synjuris.com) /CreationDate (D:{datetime.now().strftime('%Y%m%d%H%M%S')}) >>"
             self.offsets.append((info_id, self.buf.tell()))
             self._write(f"{info_id} 0 obj\n".encode())
             self._write(info_obj.encode())
@@ -1388,13 +3412,13 @@ def export_evidence_pdf(case_id):
             self._write(f"trailer\n<< /Size {info_id+1} /Root {catalog_id} 0 R /Info {info_id} 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode())
             return self.buf.getvalue()
 
-    # ── Compose the document ─────────────────────────────────────────────────
+    # â”€â”€ Compose the document â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     pdf = PDFWriter()
     pdf.new_page()
 
     # Title block
     pdf._rect(MARGIN_L-2, pdf.cur_y-4, TEXT_W+4, 28, 0.88)
-    pdf._text_line("SYNJURIS — EVIDENCE MANIFEST", MARGIN_L+4, pdf.cur_y+10, 12, bold=True)
+    pdf._text_line("SYNJURIS â€” EVIDENCE MANIFEST", MARGIN_L+4, pdf.cur_y+10, 12, bold=True)
     pdf._text_line(safe(c.get("title","")), MARGIN_L+4, pdf.cur_y-4, 10)
     pdf.cur_y -= 36
 
@@ -1434,7 +3458,7 @@ def export_evidence_pdf(case_id):
             dt   = ev["event_date"] or "Undated"
             src_ = ev["source"] or "Manual entry"
             pdf._rect(MARGIN_L-2, pdf.cur_y-2, TEXT_W+4, 14, 0.95)
-            pdf._text_line(f"{en}  ·  {cat}  ·  {dt}  ·  Source: {safe(src_)}",
+            pdf._text_line(f"{en}  Â·  {cat}  Â·  {dt}  Â·  Source: {safe(src_)}",
                            MARGIN_L+2, pdf.cur_y+2, 8, bold=True)
             pdf.cur_y -= 16
             pdf.write_text(ev["content"] or "", size=9, indent=10)
@@ -1450,7 +3474,7 @@ def export_evidence_pdf(case_id):
         for t in timeline:
             pdf.need_space(26)
             imp = " [HIGH IMPORTANCE]" if t["importance"] == "high" else ""
-            pdf._text_line(f"{t['event_date'] or 'Undated'}{imp}  —  {safe(t['title'])}",
+            pdf._text_line(f"{t['event_date'] or 'Undated'}{imp}  â€”  {safe(t['title'])}",
                            MARGIN_L, pdf.cur_y, 9, bold=True)
             pdf.cur_y -= 13
             if t["description"]:
@@ -1478,7 +3502,7 @@ def export_evidence_pdf(case_id):
     pdf.cur_y -= 10
     pdf._line(MARGIN_L, pdf.cur_y, PAGE_W-MARGIN_R, pdf.cur_y, 0.5)
     pdf.cur_y -= 14
-    pdf._text_line("Generated by SynJuris  ·  Review all items before filing  ·  Not legal advice",
+    pdf._text_line("Generated by SynJuris  Â·  Review all items before filing  Â·  Not legal advice",
                    MARGIN_L, pdf.cur_y, 7, gray=True)
 
     pdf_bytes = pdf.build()
@@ -1487,9 +3511,9 @@ def export_evidence_pdf(case_id):
     return fname, pdf_bytes
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CASE READINESS REPORT — one-page attorney-grade PDF summary
-# ══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# CASE READINESS REPORT â€” one-page attorney-grade PDF summary
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def export_readiness_pdf(case_id, user_id):
     """One-page Case Readiness Report. State vector + interpretation + deadlines.
@@ -1534,7 +3558,7 @@ def export_readiness_pdf(case_id, user_id):
     ML, MR, MT, MB = 54, 54, 54, 54
     TW = PAGE_W - ML - MR
 
-    # ── Minimal self-contained PDF writer ────────────────────────────────────
+    # â”€â”€ Minimal self-contained PDF writer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     class _PDF:
         def __init__(self):
             self.buf = _io.BytesIO()
@@ -1645,7 +3669,7 @@ def export_readiness_pdf(case_id, user_id):
             )
             return self.buf.getvalue()
 
-    # ── Compose the report ───────────────────────────────────────────────────
+    # â”€â”€ Compose the report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     pdf = _PDF()
     pdf.new_page()
     y = pdf.cur_y
@@ -1656,7 +3680,7 @@ def export_readiness_pdf(case_id, user_id):
     pdf._t("CASE READINESS REPORT", ML + 132, y - 8, 11, gray=True)
     pdf._t(f"Generated {date.today().strftime('%B %d, %Y')}", PAGE_W - MR - 148, y - 8, 9, gray=True)
     pdf._t(safe(c.get("title", "")), ML, y - 26, 13, bold=True)
-    sub = "  ·  ".join(filter(None, [c.get("case_type",""), c.get("jurisdiction",""), c.get("court_name","")]))
+    sub = "  Â·  ".join(filter(None, [c.get("case_type",""), c.get("jurisdiction",""), c.get("court_name","")]))
     pdf._t(safe(sub), ML, y - 38, 8, gray=True)
     y -= 60
 
@@ -1730,7 +3754,7 @@ def export_readiness_pdf(case_id, user_id):
             overdue = not dl["completed"] and (dl["due_date"] or "") < date.today().isoformat()
             status = "DONE" if dl["completed"] else ("OVERDUE" if overdue else "Pending")
             scol = (0.35,0.75,0.50) if dl["completed"] else ((0.85,0.25,0.25) if overdue else (0.80,0.65,0.30))
-            pdf._t(safe(f"{dl['due_date'] or 'No date'}  ·  {dl['title']}"), ML, y, 8)
+            pdf._t(safe(f"{dl['due_date'] or 'No date'}  Â·  {dl['title']}"), ML, y, 8)
             pdf._t(status, ML + TW - 50, y, 8, bold=True, rgb=scol)
             y -= 12
 
@@ -1759,7 +3783,7 @@ def export_readiness_pdf(case_id, user_id):
     # Footer
     pdf._rect(0, MB - 8, PAGE_W, 32, 0.05, 0.10, 0.17)
     pdf._t(
-        f"SynJuris v{VERSION}  ·  synjuris.com  ·  NOT LEGAL ADVICE  ·  Hash: {snap['hash'][:20]}...",
+        f"SynJuris v{VERSION}  Â·  synjuris.com  Â·  NOT LEGAL ADVICE  Â·  Hash: {snap['hash'][:20]}...",
         ML, MB + 10, 7, gray=True
     )
     pdf._t(
@@ -1772,22 +3796,22 @@ def export_readiness_pdf(case_id, user_id):
     fname = f"SynJuris_Readiness_{safe_title}_{date.today().isoformat()}.pdf"
     return fname, pdf_bytes
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DOCX EXPORT — zero-dependency Word document generator
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# DOCX EXPORT â€” zero-dependency Word document generator
 # Produces a proper .docx (OOXML) with court caption, heading, body, signature.
-# No python-docx required — builds the ZIP/XML structure directly.
-# ══════════════════════════════════════════════════════════════════════════════
+# No python-docx required â€” builds the ZIP/XML structure directly.
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def export_document_docx(doc):
     """Convert a generated document to a .docx file.
-    Returns (filename, bytes). Pure stdlib — no external dependencies."""
+    Returns (filename, bytes). Pure stdlib â€” no external dependencies."""
     import zipfile, io as _io, re as _re
 
     content = doc.get("content","")
     title   = doc.get("title", doc.get("doc_type","Document"))
     doc_type= doc.get("doc_type","Document")
 
-    # ── OOXML helpers ────────────────────────────────────────────────────────
+    # â”€â”€ OOXML helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _esc(s):
         return (str(s or "")
                 .replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
@@ -1809,7 +3833,7 @@ def export_document_docx(doc):
     def _blank():
         return '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>'
 
-    # ── Convert content to paragraphs ────────────────────────────────────────
+    # â”€â”€ Convert content to paragraphs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     paragraphs_xml = []
 
     # Title
@@ -1825,7 +3849,7 @@ def export_document_docx(doc):
             # Section header
             paragraphs_xml.append(_para(line.lstrip("# ").strip(), bold=True, size_pt=11, space_after=80))
         elif line.startswith("---") or line.startswith("==="):
-            # Horizontal rule → blank paragraph with bottom border
+            # Horizontal rule â†’ blank paragraph with bottom border
             paragraphs_xml.append(
                 '<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="4" w:space="1" w:color="C9A84C"/></w:pBdr></w:pPr></w:p>'
             )
@@ -1834,15 +3858,15 @@ def export_document_docx(doc):
 
     # SynJuris disclaimer footer
     paragraphs_xml.append(_blank())
-    paragraphs_xml.append(_para("─" * 60, size_pt=9, space_after=60))
+    paragraphs_xml.append(_para("â”€" * 60, size_pt=9, space_after=60))
     paragraphs_xml.append(_para(
-        "Generated by SynJuris. This is a draft — not legal advice. "
+        "Generated by SynJuris. This is a draft â€” not legal advice. "
         "Review all content carefully. Fill in all [BRACKET PLACEHOLDERS] before filing. "
         "Consult a licensed attorney before submitting any document to a court.",
         size_pt=8, space_after=0
     ))
 
-    # ── Build OOXML document.xml ─────────────────────────────────────────────
+    # â”€â”€ Build OOXML document.xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     doc_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" '
@@ -1871,7 +3895,7 @@ def export_document_docx(doc):
         '</w:body></w:document>'
     )
 
-    # ── Relationships ─────────────────────────────────────────────────────────
+    # â”€â”€ Relationships â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     rels_xml = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
@@ -1916,7 +3940,7 @@ def export_document_docx(doc):
         '</Relationships>'
     )
 
-    # ── Assemble ZIP ─────────────────────────────────────────────────────────
+    # â”€â”€ Assemble ZIP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     buf = _io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("[Content_Types].xml",         content_types_xml)
@@ -1929,10 +3953,9 @@ def export_document_docx(doc):
     fname = f"SynJuris_{safe_title}_{date.today().isoformat()}.docx"
     return fname, buf.getvalue()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# UI — full single-page app
-# ══════════════════════════════════════════════════════════════════════════════
-
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# UI â€” full single-page app
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 UI = r"""<!DOCTYPE html>
 <html lang="en">
@@ -1960,7 +3983,7 @@ UI = r"""<!DOCTYPE html>
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.7}
 
-#app{display:grid;grid-template-columns:1fr;grid-template-rows:50px 1fr;height:100vh}
+#app{display:grid;grid-template-columns:220px 1fr;grid-template-rows:50px 1fr;height:100vh}
 
 /* topbar */
 #topbar{grid-column:1/-1;display:flex;align-items:center;padding:0 20px;background:var(--surface2);border-bottom:1px solid var(--gold-bd);gap:12px;z-index:10}
@@ -1973,7 +3996,7 @@ html,body{height:100%;background:var(--bg);color:var(--ink);font-family:var(--sa
 .api-pill.on .api-dot{background:var(--green)}
 
 /* sidebar */
-#sidebar{background:var(--surface2);border-right:1px solid var(--gold-bd);display:flex;flex-direction:column;overflow:hidden;position:fixed;top:50px;left:0;bottom:0;width:260px;transform:translateX(-100%);transition:transform .25s ease;z-index:100}
+#sidebar{background:var(--surface2);border-right:1px solid var(--gold-bd);display:flex;flex-direction:column;overflow:hidden}
 #sb-head{padding:14px 14px 10px;border-bottom:1px solid var(--border2)}
 #sb-head p{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);margin-bottom:8px}
 #new-btn{width:100%;background:transparent;color:var(--gold);border:1px solid var(--gold-bd);border-radius:var(--r);padding:8px 10px;font-family:var(--sans);font-size:12px;font-weight:500;cursor:pointer;transition:opacity .15s}
@@ -2153,27 +4176,16 @@ textarea{resize:vertical;min-height:72px}
   .badge{border:1px solid #999!important;background:none!important;color:#000!important}
   a[href]:after{content:" (" attr(href) ")"}
 }
-
-#mob-btn{display:none;background:none;border:none;color:var(--gold);font-size:22px;cursor:pointer;padding:0 10px 0 0;line-height:1;flex-shrink:0}
-@media(min-width:681px){
-  #app{grid-template-columns:220px 1fr!important}
-  #sidebar{position:static!important;transform:none!important;width:auto!important;z-index:auto!important}
-  #mob-btn{display:none!important}
-  #mob-overlay{display:none!important}
-}
-#sidebar.mob-open{transform:translateX(0)!important}
-#mob-overlay{display:none;position:fixed;top:50px;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);z-index:99}
-#mob-overlay.mob-open{display:block}
 </style>
 </head>
 <body>
 <div id="app">
 
 <div id="topbar">
-  <button id="mob-btn" onclick="toggleSidebar()" aria-label="Menu">&#9776;</button><h1>SYN<em>JURIS</em></h1>
+  <h1>SYN<em>JURIS</em></h1>
   <span class="topbar-tag">AI-ASSISTED &nbsp;&middot;&nbsp; YOUR DATA STAYS YOURS</span>
   <div class="sp"></div>
-  <div class="api-pill" id="apill"><span class="api-dot"></span><span id="apill-t">Checking AI…</span></div>
+  <div class="api-pill" id="apill"><span class="api-dot"></span><span id="apill-t">Checking AIâ€¦</span></div>
   <span id="tier-badge" onclick="openTierSelector()" title="Click to change tier"
     style="margin-left:10px;font-size:10px;color:var(--ink3);border:1px solid var(--border);border-radius:4px;padding:3px 8px;cursor:pointer;white-space:nowrap"></span>
   <a href="/logout" style="margin-left:10px;font-size:11px;color:var(--ink3);text-decoration:none;border:1px solid var(--border);border-radius:4px;padding:4px 10px;white-space:nowrap" title="Sign out">Sign out</a>
@@ -2186,60 +4198,15 @@ textarea{resize:vertical;min-height:72px}
 
 <div id="main">
   <div id="welcome">
-    <h2 style="font-family:var(--serif);font-size:48px;color:var(--gold);letter-spacing:.1em;margin-bottom:6px">SYNJURIS</h2>
-    <div style="font-family:var(--serif);font-size:22px;color:var(--ink);letter-spacing:.02em;margin-bottom:16px;line-height:1.4">Your story, organized.<br>Your rights, defended.</div>
-    <div style="font-size:11px;letter-spacing:.18em;color:var(--ink3);text-transform:uppercase;margin-bottom:24px">LOCAL-FIRST &nbsp;&middot;&nbsp; AI-ASSISTED &nbsp;&middot;&nbsp; DATA SECURITY</div>
-    <p style="color:var(--ink2);max-width:480px;font-size:16px;line-height:1.9;margin-bottom:20px">Built for pro se litigants. Organize evidence, understand your rights, draft documents, and prepare for court — all running locally. Your data never leaves this computer.</p>
+    <h2 style="font-family:var(--serif);font-size:48px;color:var(--gold);letter-spacing:.1em;margin-bottom:10px">SYNJURIS</h2>
+    <div style="font-size:12px;letter-spacing:.18em;color:var(--ink3);text-transform:uppercase;margin-bottom:24px">LOCAL-FIRST &nbsp;&middot;&nbsp; AI-ASSISTED &nbsp;&middot;&nbsp; DATA SECURITY</div>
+    <p style="color:var(--ink2);max-width:480px;font-size:16px;line-height:1.9;margin-bottom:20px">Built for pro se litigants. Organize evidence, understand your rights, draft documents, and prepare for court â€” all running locally. Your data never leaves this computer.</p>
     <div style="max-width:480px;padding:14px 18px;background:rgba(201,168,76,.08);border:1px solid rgba(201,168,76,.25);border-radius:8px;margin-bottom:28px">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--gold);margin-bottom:6px">⚖ Work-Product Protection</div>
-      <p style="font-size:13px;color:var(--ink2);line-height:1.7">Communications with cloud AI tools have been ruled non-privileged in federal proceedings because they involve third-party transmission. SynJuris runs entirely on your machine — no third party ever receives your case data — which means your strategy may retain work-product status that cloud tools cannot provide.</p>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--gold);margin-bottom:6px">âš– Work-Product Protection</div>
+      <p style="font-size:13px;color:var(--ink2);line-height:1.7">Communications with cloud AI tools have been ruled non-privileged in federal proceedings because they involve third-party transmission. SynJuris runs entirely on your machine â€” no third party ever receives your case data â€” which means your strategy may retain work-product status that cloud tools cannot provide.</p>
     </div>
     <button class="btn btn-p" onclick="openNewCase()" style="padding:14px 36px;font-size:15px;letter-spacing:.04em">Start a New Case</button>
-
-    <div style="margin-top:48px;padding:22px 24px;background:rgba(201,168,76,.07);border:1px solid rgba(201,168,76,.2);border-radius:10px;max-width:480px;text-align:left">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--gold);margin-bottom:8px">&#8681; Free Desktop Version</div>
-      <p style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:16px">
-        While we finalize the cloud version, download SynJuris and run it privately on your own computer —
-        <strong style="color:var(--ink)">completely free.</strong>
-        Enter your email below — we'll notify you when the cloud version launches.
-        Then pick your platform: double-click the launcher and you're running in seconds.
-      </p>
-      <div id="dl-form" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-        <input id="dl-email" type="email" placeholder="your@email.com"
-          style="flex:1;min-width:180px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:9px 12px;font-size:13px;color:var(--ink);outline:none">
-        <button onclick="submitDownload()" id="dl-btn"
-          style="padding:9px 18px;background:var(--gold);color:#0d1b2a;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">
-          Get Free Download
-        </button>
-      </div>
-      <div id="dl-links" style="display:none;margin-top:4px">
-        <div style="font-size:12px;color:var(--ink2);margin-bottom:10px">&#10003; Got it — choose your platform:</div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <a href="https://raw.githubusercontent.com/Synjuris/synjuris/main/launch_synjuris_v2_windows.bat"
-             style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
-            &#x229E; Windows
-          </a>
-          <a href="https://raw.githubusercontent.com/Synjuris/synjuris/main/launch_synjuris_v2_mac_command.txt"
-             style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
-            &#xF8FF; Mac
-          </a>
-          <a href="https://raw.githubusercontent.com/Synjuris/synjuris/main/synjuris-10.py"
-             style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink);text-decoration:none;font-weight:500">
-            &#x1F40D; Python
-          </a>
-          <a href="https://github.com/Synjuris/synjuris"
-             style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;background:transparent;border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--ink3);text-decoration:none">
-            GitHub &#8599;
-          </a>
-        </div>
-      </div>
-      <div id="dl-err" style="display:none;font-size:12px;color:#e05c5c;margin-top:6px"></div>
-      <div style="font-size:11px;color:var(--ink3);margin-top:10px">
-        Requires Python 3.9+ &nbsp;&middot;&nbsp; Windows &amp; Mac &nbsp;&middot;&nbsp; No spam, ever.
-      </div>
-    </div>
-
-    <div style="margin-top:32px;font-size:14px;color:var(--ink3)">&#9670;</div>
+    <div style="margin-top:40px;font-size:14px;color:var(--ink3)">&#9670;</div>
   </div>
   <div id="cv" style="display:none">
     <div id="cv-head">
@@ -2249,18 +4216,18 @@ textarea{resize:vertical;min-height:72px}
           <div class="meta" id="cv-meta"></div>
         </div>
         <div style="display:flex;gap:6px;margin-top:4px;flex-shrink:0">
-          <button class="btn btn-s" style="font-size:11px" onclick="exportEvidence()" title="Download evidence manifest as text file">↓ Export TXT</button>
-          <button class="btn btn-s" style="font-size:11px" onclick="exportPDF()" title="Download formatted PDF for court">↓ Export PDF</button>
-          <button class="btn btn-s" style="font-size:11px" onclick="backupDB()" title="Download database only">↓ Backup DB</button>
-          <button class="btn btn-s" style="font-size:11px" onclick="fullArchive()" title="Download database + all uploaded files as a zip">↓ Full Archive</button>
-          <button class="btn btn-s" style="font-size:11px;color:var(--gold);border-color:var(--gold)" onclick="encryptedBackup()" title="Download AES-256 encrypted backup — only you can decrypt it">🔐 Encrypted Backup</button>
-          <button class="btn btn-s" style="font-size:11px;color:var(--purple);border-color:var(--purple)" onclick="readinessReport()" title="One-page Case Readiness Report PDF for attorney or client review">📊 Readiness Report</button>
+          <button class="btn btn-s" style="font-size:11px" onclick="exportEvidence()" title="Download evidence manifest as text file">â†“ Export TXT</button>
+          <button class="btn btn-s" style="font-size:11px" onclick="exportPDF()" title="Download formatted PDF for court">â†“ Export PDF</button>
+          <button class="btn btn-s" style="font-size:11px" onclick="backupDB()" title="Download database only">â†“ Backup DB</button>
+          <button class="btn btn-s" style="font-size:11px" onclick="fullArchive()" title="Download database + all uploaded files as a zip">â†“ Full Archive</button>
+          <button class="btn btn-s" style="font-size:11px;color:var(--gold);border-color:var(--gold)" onclick="encryptedBackup()" title="Download AES-256 encrypted backup â€” only you can decrypt it">ðŸ” Encrypted Backup</button>
+          <button class="btn btn-s" style="font-size:11px;color:var(--purple);border-color:var(--purple)" onclick="readinessReport()" title="One-page Case Readiness Report PDF for attorney or client review">ðŸ“Š Readiness Report</button>
           <button class="btn btn-s" style="font-size:11px" onclick="openEditCase()">Edit Case</button>
         </div>
       </div>
       <div id="tabs">
         <div class="tab active" onclick="switchTab('overview')">Overview</div>
-        <div class="tab" onclick="switchTab('roadmap')">🗺 Roadmap</div>
+        <div class="tab" onclick="switchTab('roadmap')">ðŸ—º Roadmap</div>
         <div class="tab" onclick="switchTab('evidence')">Evidence</div>
         <div class="tab" onclick="switchTab('timeline')">Timeline</div>
         <div class="tab" onclick="switchTab('deadlines')">Deadlines</div>
@@ -2272,10 +4239,10 @@ textarea{resize:vertical;min-height:72px}
         <div class="tab" onclick="switchTab('arguments')">Evidence Organizer</div>
         <div class="tab" onclick="switchTab('strategy')">Case Strategy</div>
         <div class="tab" onclick="switchTab('resources')">Resources</div>
-        <div class="tab" onclick="switchTab('courtroom')">🏛 Courtroom</div>
+        <div class="tab" onclick="switchTab('courtroom')">ðŸ› Courtroom</div>
         <div class="tab" onclick="switchTab('dynamics')">&#x2B21; Dynamics</div>
         <div class="tab" onclick="switchTab('chat')">Ask the Law</div>
-        <div class="tab atty-only" onclick="switchTab('attorney')" style="display:none">⚖ Attorney</div>
+        <div class="tab atty-only" onclick="switchTab('attorney')" style="display:none">âš– Attorney</div>
       </div>
     </div>
     <div id="tc"></div>
@@ -2285,7 +4252,7 @@ textarea{resize:vertical;min-height:72px}
 
 <div id="mo" onclick="moClick(event)">
   <div id="modal">
-    <div id="mo-head"><h3 id="mo-title">New Case</h3><button class="mo-x" onclick="closeMo()">×</button></div>
+    <div id="mo-head"><h3 id="mo-title">New Case</h3><button class="mo-x" onclick="closeMo()">Ã—</button></div>
     <div id="mo-body"></div>
   </div>
 </div>
@@ -2293,14 +4260,14 @@ textarea{resize:vertical;min-height:72px}
 <script>
 let CC = null, ctab = 'overview', evFilter = 'All';
 
-/* ── Init ── */
-/* ══════════════════════════════════════════════════════
-   ENCRYPTED BACKUP — AES-256-GCM via Web Crypto API
+/* â”€â”€ Init â”€â”€ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   ENCRYPTED BACKUP â€” AES-256-GCM via Web Crypto API
    The server never sees the passphrase. Zero knowledge.
-   ══════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 async function encryptedBackup(){
-  const pass = prompt("Set an encryption passphrase for this backup:\n\nWrite it down — without it, the backup CANNOT be decrypted.");
+  const pass = prompt("Set an encryption passphrase for this backup:\n\nWrite it down â€” without it, the backup CANNOT be decrypted.");
   if(!pass) return;
   const pass2 = prompt("Confirm passphrase:");
   if(pass !== pass2){ alert("Passphrases don't match. Backup cancelled."); return; }
@@ -2308,7 +4275,7 @@ async function encryptedBackup(){
   const statusEl = document.querySelector('#cv-head') || document.body;
   const notice = document.createElement('div');
   notice.style.cssText='position:fixed;bottom:20px;right:20px;background:#111f30;border:1px solid #c9a84c;border-radius:8px;padding:12px 18px;font-size:13px;color:#c9a84c;z-index:9999';
-  notice.textContent='🔐 Encrypting backup…'; document.body.appendChild(notice);
+  notice.textContent='ðŸ” Encrypting backupâ€¦'; document.body.appendChild(notice);
 
   try {
     // 1. Fetch raw backup data from server (plaintext zip as base64)
@@ -2354,7 +4321,7 @@ async function encryptedBackup(){
     a.click(); URL.revokeObjectURL(a.href);
 
     notice.style.background='#0d2b1a'; notice.style.borderColor='#1a5c33'; notice.style.color='#4caf82';
-    notice.textContent='✓ Encrypted backup downloaded. Store it safely — only your passphrase can open it.';
+    notice.textContent='âœ“ Encrypted backup downloaded. Store it safely â€” only your passphrase can open it.';
   } catch(e) {
     notice.style.background='#2b0d0d'; notice.style.borderColor='#5c1a1a'; notice.style.color='#e57373';
     notice.textContent='Backup failed: '+e.message;
@@ -2372,7 +4339,7 @@ async function restoreEncryptedBackup(){
 
     const notice = document.createElement('div');
     notice.style.cssText='position:fixed;bottom:20px;right:20px;background:#111f30;border:1px solid #c9a84c;border-radius:8px;padding:12px 18px;font-size:13px;color:#c9a84c;z-index:9999';
-    notice.textContent='🔐 Decrypting…'; document.body.appendChild(notice);
+    notice.textContent='ðŸ” Decryptingâ€¦'; document.body.appendChild(notice);
 
     try {
       const buf = new Uint8Array(await file.arrayBuffer());
@@ -2395,17 +4362,17 @@ async function restoreEncryptedBackup(){
         const dec = await crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ciphertext);
         plaintext = JSON.parse(new TextDecoder().decode(dec));
       } catch(e) {
-        throw new Error("Decryption failed — wrong passphrase or corrupted file");
+        throw new Error("Decryption failed â€” wrong passphrase or corrupted file");
       }
 
-      if(!confirm("⚠ This will REPLACE all your current cases and evidence with the backup. Continue?")) {
+      if(!confirm("âš  This will REPLACE all your current cases and evidence with the backup. Continue?")) {
         notice.remove(); return;
       }
 
       const r = await api('/api/restore-backup', {data: plaintext.data, confirmed: true});
       if(r.ok){
         notice.style.background='#0d2b1a'; notice.style.borderColor='#1a5c33'; notice.style.color='#4caf82';
-        notice.textContent='✓ Backup restored. Reloading…';
+        notice.textContent='âœ“ Backup restored. Reloadingâ€¦';
         setTimeout(()=>location.reload(), 1500);
       } else {
         throw new Error(r.error||'Restore failed');
@@ -2419,9 +4386,9 @@ async function restoreEncryptedBackup(){
   input.click();
 }
 
-/* ══════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    TIER SELECTOR
-   ══════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function openTierSelector(){
   showMo('Account Tier',`
     <div class="notice n-info" style="margin-bottom:16px">
@@ -2434,7 +4401,7 @@ function openTierSelector(){
         <div style="font-size:12px;color:var(--ink2)">Full case management, evidence engine, AI tools, document generation, hearing prep.</div>
       </div>
       <div class="card cb" style="cursor:pointer;border:2px solid ${_userTier==='attorney'?'var(--gold)':' var(--border)'}" onclick="setTier('attorney')">
-        <div style="font-size:14px;font-weight:600;margin-bottom:3px">⚖ Attorney</div>
+        <div style="font-size:14px;font-weight:600;margin-bottom:3px">âš– Attorney</div>
         <div style="font-size:12px;color:var(--ink2)">Everything above + Client Portal, Conflict Checks, Time Entries, Redacted Export.</div>
       </div>
     </div>
@@ -2448,9 +4415,9 @@ async function setTier(tier){
   else alert(d.error||'Failed to update tier');
 }
 
-/* ══════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    COURTLISTENER CITATION VERIFICATION UI
-   ══════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 function renderCitationWarnings(citations){
   if(!citations||!citations.length) return '';
   const warnings = citations.filter(c=>!c.found);
@@ -2460,12 +4427,12 @@ function renderCitationWarnings(citations){
     <div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink3);margin-bottom:8px">Citation Verification (CourtListener)</div>
     ${verified.map(c=>`
       <div style="font-size:12px;margin-bottom:4px;color:var(--green)">
-        ✓ <strong>${esc(c.citation)}</strong>${c.case_name?` — ${esc(c.case_name)}`:''}
-        ${c.url?`<a href="${c.url}" target="_blank" style="color:var(--blue);margin-left:6px;font-size:11px">View ↗</a>`:''}
+        âœ“ <strong>${esc(c.citation)}</strong>${c.case_name?` â€” ${esc(c.case_name)}`:''}
+        ${c.url?`<a href="${c.url}" target="_blank" style="color:var(--blue);margin-left:6px;font-size:11px">View â†—</a>`:''}
       </div>`).join('')}
     ${warnings.map(c=>`
       <div style="font-size:12px;margin-bottom:4px;color:var(--amber)">
-        ⚠ <strong>${esc(c.citation)}</strong> — ${esc(c.warning||'Not found in CourtListener')}
+        âš  <strong>${esc(c.citation)}</strong> â€” ${esc(c.warning||'Not found in CourtListener')}
       </div>`).join('')}
     <div style="font-size:10px;color:var(--ink3);margin-top:6px;font-style:italic">Verify all citations before filing. CourtListener covers federal and many state courts.</div>
   </div>`;
@@ -2478,11 +4445,11 @@ async function init(){
     const d = await r.json();
     const on = d.reply && !d.reply.includes('No API key') && !d.reply.includes('AI features require');
     document.getElementById('apill').classList.toggle('on',on);
-    document.getElementById('apill-t').textContent = on ? 'AI ready' : 'AI offline — no key set';
+    document.getElementById('apill-t').textContent = on ? 'AI ready' : 'AI offline â€” no key set';
   }catch(e){ document.getElementById('apill-t').textContent = 'AI offline'; }
 }
 
-/* ── Cases ── */
+/* â”€â”€ Cases â”€â”€ */
 async function loadCases(){
   const cases = await api('/api/cases');
   const el = document.getElementById('case-list');
@@ -2495,11 +4462,11 @@ async function loadCases(){
       <div style="display:flex;align-items:center;gap:6px">
         <div style="flex:1;min-width:0">
           <div class="ci-t">${esc(c.title)}</div>
-          <div class="ci-m">${c.case_type||''} · ${c.jurisdiction||''}</div>
+          <div class="ci-m">${c.case_type||''} Â· ${c.jurisdiction||''}</div>
         </div>
         <button onclick="event.stopPropagation();deleteCase(${c.id},'${esc(c.title)}')"
           style="flex-shrink:0;background:none;border:none;color:var(--ink3);cursor:pointer;font-size:14px;padding:2px 4px;border-radius:3px;line-height:1"
-          title="Delete case">×</button>
+          title="Delete case">Ã—</button>
       </div>`;
     d.onclick=()=>loadCase(c.id);
     el.appendChild(d);
@@ -2514,7 +4481,7 @@ async function loadCase(id){
   document.getElementById('welcome').style.display='none';
   document.getElementById('cv').style.display='flex';
   document.getElementById('cv-title').textContent=CC.title;
-  const hdParts = [CC.case_type,CC.jurisdiction,CC.court_name,CC.case_number?'#'+CC.case_number:null].filter(Boolean).join(' · ');
+  const hdParts = [CC.case_type,CC.jurisdiction,CC.court_name,CC.case_number?'#'+CC.case_number:null].filter(Boolean).join(' Â· ');
   const metaEl = document.getElementById('cv-meta');
   // build statute verify links if we have a jurisdiction
   let statuteLinks = '';
@@ -2524,7 +4491,7 @@ async function loadCase(id){
     statuteLinks = ` <span style="margin-left:6px">` +
       `<a href="https://www.google.com/search?q=${j}+${ct}+statute" target="_blank" ` +
       `style="font-size:10px;color:var(--blue);text-decoration:none;border:1px solid var(--blue-bd);border-radius:3px;padding:1px 6px" ` +
-      `title="Search for current statutes in ${CC.jurisdiction}">Verify law ↗</a></span>`;
+      `title="Search for current statutes in ${CC.jurisdiction}">Verify law â†—</a></span>`;
   }
   metaEl.innerHTML = esc(hdParts) + statuteLinks;
   document.querySelectorAll('.ci').forEach(el=>{
@@ -2535,7 +4502,7 @@ async function loadCase(id){
 
 async function refresh(){ if(CC) await loadCase(CC.id); }
 
-/* ── Tabs ── */
+/* â”€â”€ Tabs â”€â”€ */
 function switchTab(tab){
   ctab=tab;
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.textContent.trim().toLowerCase().replace(/[^a-z]/g,"")===tab.toLowerCase().replace(/[^a-z]/g,"")));
@@ -2548,7 +4515,7 @@ function switchTab(tab){
   if(map[tab]) map[tab](c);
 }
 
-/* ── Attorney tier visibility ── */
+/* â”€â”€ Attorney tier visibility â”€â”€ */
 let _userTier = 'pro_se';
 async function loadUserTier(){
   try{
@@ -2559,24 +4526,24 @@ async function loadUserTier(){
     });
     // Show tier badge in header
     const badge = document.getElementById('tier-badge');
-    if(badge) badge.textContent = _userTier==='attorney' ? '⚖ Attorney' : 'Pro Se';
+    if(badge) badge.textContent = _userTier==='attorney' ? 'âš– Attorney' : 'Pro Se';
   }catch(e){}
 }
 
-/* ══════════ OVERVIEW ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• OVERVIEW â•â•â•â•â•â•â•â•â•â• */
 async function renderOverview(c){
   const ev=CC._ev||[], conf=ev.filter(e=>e.confirmed), unc=ev.filter(e=>!e.confirmed);
   const dl=CC._dl||[], over=dl.filter(d=>!d.completed&&d.due_date<today()), due=dl.filter(d=>!d.completed&&d.due_date>=today());
   const cats=[...new Set(conf.map(e=>e.category).filter(Boolean))];
 
-  // Fetch guidance and interpretation in parallel — both are deterministic, fast
+  // Fetch guidance and interpretation in parallel â€” both are deterministic, fast
   let guidance=[], interp=null;
   try {
     [guidance, interp] = await Promise.all([
       api('/api/cases/'+CC.id+'/guidance'),
       api('/api/cases/'+CC.id+'/interpret')
     ]);
-  } catch(e) { /* non-fatal — render without */ }
+  } catch(e) { /* non-fatal â€” render without */ }
 
   const _levelCls = {critical:'n-red', high:'n-warn', moderate:'n-info', normal:''};
   const _urgCls   = {critical:'var(--red)', high:'var(--amber)', moderate:'var(--blue)', normal:'var(--green)'};
@@ -2594,7 +4561,7 @@ async function renderOverview(c){
               <div style="font-size:13px;font-weight:600;color:${_urgCls[g.level]||'var(--ink)'};margin-bottom:3px">${esc(g.title)}</div>
               <div style="font-size:12px;color:var(--ink2);line-height:1.6">${esc(g.detail)}</div>
             </div>
-            <span style="font-size:11px;color:var(--ink3);white-space:nowrap;flex-shrink:0;margin-top:2px">→ ${esc(g.action_tab)}</span>
+            <span style="font-size:11px;color:var(--ink3);white-space:nowrap;flex-shrink:0;margin-top:2px">â†’ ${esc(g.action_tab)}</span>
           </div>
         </div>`).join('')}
     </div>
@@ -2631,7 +4598,7 @@ async function renderOverview(c){
   ${CC._p?.length?`<div class="section"><div class="st">Parties</div><div class="card cb" style="display:flex;flex-wrap:wrap;gap:8px">
     ${CC._p.map(p=>`<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:7px 12px">
       <div style="font-weight:500;font-size:15px">${esc(p.name)}</div>
-      <div style="font-size:13px;color:var(--ink3)">${esc(p.role)}${p.attorney?` · Atty: ${esc(p.attorney)}`:''}</div>
+      <div style="font-size:13px;color:var(--ink3)">${esc(p.role)}${p.attorney?` Â· Atty: ${esc(p.attorney)}`:''}</div>
     </div>`).join('')}
   </div></div>`:''}
   ${over.length?`<div class="section"><div class="st" style="color:var(--red)">Overdue Deadlines</div><div class="card">
@@ -2650,7 +4617,7 @@ function stat(n,label,sub,v=''){
   return `<div class="${cls}"><div class="stat-n">${n}</div><div class="stat-l">${label}</div>${sub?`<div style="font-size:10px;color:var(--ink3)">${sub}</div>`:''}</div>`;
 }
 
-/* ══════════ EVIDENCE ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• EVIDENCE â•â•â•â•â•â•â•â•â•â• */
 function renderEvidence(c){
   const ev=CC._ev||[];
   const cats=['All',...new Set(ev.map(e=>e.category).filter(Boolean))];
@@ -2664,12 +4631,12 @@ function renderEvidence(c){
     </div>
     <div style="display:flex;gap:6px;flex-shrink:0;margin-left:10px">
       <button class="btn btn-s" onclick="openAddEv()">+ Add Item</button>
-      <button class="btn btn-s" onclick="openAttachFile()">📎 Attach File</button>
-      <button class="btn btn-s" onclick="openImport()">↑ Import SMS</button>
+      <button class="btn btn-s" onclick="openAttachFile()">ðŸ“Ž Attach File</button>
+      <button class="btn btn-s" onclick="openImport()">â†‘ Import SMS</button>
     </div>
   </div>
-  ${unc.length?`<div class="section"><div class="st" style="color:var(--amber)">⚠ Needs Review (${unc.length})</div>
-    <div class="notice n-warn">Auto-flagged messages — review each one and confirm or remove before it counts as evidence.</div>
+  ${unc.length?`<div class="section"><div class="st" style="color:var(--amber)">âš  Needs Review (${unc.length})</div>
+    <div class="notice n-warn">Auto-flagged messages â€” review each one and confirm or remove before it counts as evidence.</div>
     <div class="card">${unc.map(evRow).join('')}</div></div>`:''}
   <div class="section">
     <div class="st">Confirmed Evidence (${conf.length}) <button class="xbtn" onclick="openAddEv()" style="font-size:10px">+ Add</button></div>
@@ -2679,9 +4646,9 @@ function renderEvidence(c){
 }
 // Confidence framing shown on unconfirmed flagged evidence
 const _CONF_LABELS = {
-  strong:   'Strong indicator — pattern closely matches known violation language.',
-  likely:   'Likely indicator — pattern matches common conduct of concern.',
-  possible: 'Possible indicator — language may be relevant; confirm carefully.',
+  strong:   'Strong indicator â€” pattern closely matches known violation language.',
+  likely:   'Likely indicator â€” pattern matches common conduct of concern.',
+  possible: 'Possible indicator â€” language may be relevant; confirm carefully.',
 };
 const _CONF_DISCLAIMER = 'This flag does NOT establish a legal violation. Review the entry and confirm only if it accurately represents what occurred.';
 
@@ -2698,7 +4665,7 @@ function evRow(e){
                   : ['Parental Alienation','Harassment','Financial','Stonewalling'].includes(e.category) ? 'likely' : 'possible');
   const flagBlock = showFlag ? `
     <div style="margin-top:8px;padding:8px 10px;background:var(--amber-bg);border:1px solid var(--amber-bd);border-radius:var(--r)">
-      <div style="font-size:11px;font-weight:600;color:var(--amber);margin-bottom:3px">⚑ Auto-flagged as ${esc(e.category)} — ${confLevel}</div>
+      <div style="font-size:11px;font-weight:600;color:var(--amber);margin-bottom:3px">âš‘ Auto-flagged as ${esc(e.category)} â€” ${confLevel}</div>
       <div style="font-size:11px;color:var(--ink2);margin-bottom:4px">${esc(_CONF_LABELS[confLevel]||'')}</div>
       <div style="font-size:10px;color:var(--ink3);font-style:italic">${_CONF_DISCLAIMER}</div>
     </div>` : '';
@@ -2706,16 +4673,16 @@ function evRow(e){
     <span class="badge ${e.confirmed?'confirmed':'unconfirmed'}">${esc(e.category||'General')}</span>
     <div class="ev-body">
       ${en?`<div style="font-size:10px;color:var(--blue);font-weight:500;margin-bottom:3px">${esc(en)}</div>`:''}
-      <div class="ev-content">${esc((e.content||'').slice(0,300))}${(e.content||'').length>300?'…':''}</div>
+      <div class="ev-content">${esc((e.content||'').slice(0,300))}${(e.content||'').length>300?'â€¦':''}</div>
       ${hasFile && isImg ? `<img src="${e.file_path}" style="max-width:100%;max-height:180px;border-radius:4px;margin-top:6px;border:1px solid var(--border)" loading="lazy">` : ''}
-      ${hasFile && isPdf ? `<a href="${e.file_path}" target="_blank" style="font-size:11px;color:var(--blue);display:inline-block;margin-top:5px">📄 View PDF ↗</a>` : ''}
-      ${hasFile && !isImg && !isPdf ? `<a href="${e.file_path}" target="_blank" style="font-size:11px;color:var(--blue);display:inline-block;margin-top:5px">📎 View attachment ↗</a>` : ''}
+      ${hasFile && isPdf ? `<a href="${e.file_path}" target="_blank" style="font-size:11px;color:var(--blue);display:inline-block;margin-top:5px">ðŸ“„ View PDF â†—</a>` : ''}
+      ${hasFile && !isImg && !isPdf ? `<a href="${e.file_path}" target="_blank" style="font-size:11px;color:var(--blue);display:inline-block;margin-top:5px">ðŸ“Ž View attachment â†—</a>` : ''}
       ${flagBlock}
-      <div class="ev-meta" style="margin-top:6px">${evDate} · ${esc(e.source||'manual')}</div>
+      <div class="ev-meta" style="margin-top:6px">${evDate} Â· ${esc(e.source||'manual')}</div>
       ${e.notes?`<div class="ev-meta">${esc(e.notes)}</div>`:''}
       <div class="ev-acts">
-        ${!e.confirmed?`<button class="xbtn ok" onclick="confirmEv(${e.id})">✓ Confirm as Evidence</button>`:''}
-        <button class="xbtn rm" onclick="delEv(${e.id})">✕ Remove</button>
+        ${!e.confirmed?`<button class="xbtn ok" onclick="confirmEv(${e.id})">âœ“ Confirm as Evidence</button>`:''}
+        <button class="xbtn rm" onclick="delEv(${e.id})">âœ• Remove</button>
       </div>
     </div>
   </div>`;
@@ -2725,7 +4692,7 @@ async function delEv(id){if(!confirm('Remove this item?'))return;await api('/api
 
 function openAddEv(){
   showMo('Add Evidence Item',`
-    <div class="fg"><label>Content / Description</label><textarea id="ev-c" placeholder="Describe the event, paste a message, or summarize a document…" style="min-height:90px"></textarea></div>
+    <div class="fg"><label>Content / Description</label><textarea id="ev-c" placeholder="Describe the event, paste a message, or summarize a documentâ€¦" style="min-height:90px"></textarea></div>
     <div class="two-col">
       <div class="fg"><label>Date of Event</label><input type="date" id="ev-d"></div>
       <div class="fg"><label>Category</label><select id="ev-cat">
@@ -2733,7 +4700,7 @@ function openAddEv(){
       </select></div>
     </div>
     <div class="fg"><label>Source / Context</label><input id="ev-src" placeholder="e.g. text message, email, police report, witness"></div>
-    <div class="fg"><label>Notes (optional)</label><input id="ev-n" placeholder="Any additional context…"></div>
+    <div class="fg"><label>Notes (optional)</label><input id="ev-n" placeholder="Any additional contextâ€¦"></div>
     <div class="br">
       <button class="btn btn-s" onclick="closeMo()">Cancel</button>
       <button class="btn btn-p" onclick="submitEv()">Add to Case</button>
@@ -2757,7 +4724,7 @@ function openAttachFile(){
         ${['Photo / Video','Police Report','Medical Record','Financial Record','Court Document','Audio Recording','Screenshot','Other'].map(c=>`<option>${c}</option>`).join('')}
       </select></div>
     </div>
-    <div class="fg"><label>Description / Notes</label><input id="af-notes" placeholder="Describe what this file shows…"></div>
+    <div class="fg"><label>Description / Notes</label><input id="af-notes" placeholder="Describe what this file showsâ€¦"></div>
     <div id="af-status" style="font-size:12px;color:var(--ink2)"></div>
     <div class="br"><button class="btn btn-s" onclick="closeMo()">Cancel</button>
     <button class="btn btn-p" id="af-btn" onclick="submitAttachFile()">Attach to Case</button></div>`);
@@ -2768,11 +4735,11 @@ async function submitAttachFile(){
   const file = fileInput.files[0];
   const status = document.getElementById('af-status');
   const btn = document.getElementById('af-btn');
-  btn.disabled=true; status.textContent='Reading file…';
+  btn.disabled=true; status.textContent='Reading fileâ€¦';
   const reader = new FileReader();
   reader.onload = async(e)=>{
     const b64 = e.target.result.split(',')[1];
-    status.textContent='Uploading…';
+    status.textContent='Uploadingâ€¦';
     const d = await api('/api/upload-file',{
       case_id:CC.id, filename:file.name, data:b64,
       event_date:val('af-date'), category:val('af-cat'), notes:val('af-notes')
@@ -2785,13 +4752,13 @@ async function submitAttachFile(){
 
 function openImport(){
   showMo('Import SMS / MMS Messages',`
-    <div class="notice n-info">Export messages using "SMS Backup &amp; Restore" (Android) or similar. The XML file stays on your computer — it is never uploaded.</div>
+    <div class="notice n-info">Export messages using "SMS Backup &amp; Restore" (Android) or similar. The XML file stays on your computer â€” it is never uploaded.</div>
     <div id="dz" onclick="document.getElementById('xi').click()" ondragover="this.classList.add('over');event.preventDefault()" ondragleave="this.classList.remove('over')" ondrop="handleDrop(event)">
       Drop your XML backup here, or click to browse
       <input type="file" id="xi" accept=".xml" style="display:none" onchange="handleFile(event)">
     </div>
-    <div class="fg"><label>Filter by phone number (optional)</label><input id="xn" placeholder="e.g. 9015550123 — leave blank to import all"></div>
-    <div class="notice n-warn">⚠ SynJuris will flag messages matching known patterns. You MUST review and confirm each one — flagging is not the same as evidence.</div>
+    <div class="fg"><label>Filter by phone number (optional)</label><input id="xn" placeholder="e.g. 9015550123 â€” leave blank to import all"></div>
+    <div class="notice n-warn">âš  SynJuris will flag messages matching known patterns. You MUST review and confirm each one â€” flagging is not the same as evidence.</div>
     <div id="xi-status" style="font-size:12px;color:var(--ink2);margin-top:6px"></div>
     <div class="br"><button class="btn btn-s" onclick="closeMo()">Close</button></div>`);
 }
@@ -2811,14 +4778,14 @@ function processXML(file){
       st.innerHTML='<strong>Done.</strong> Imported '+d.imported+' messages (SMS + MMS). <span style="color:var(--amber)">'+d.flagged+' flagged for review.</span> Go to Evidence tab to confirm.';
       await refresh();
     } catch(err){
-      st.innerHTML='<span style="color:var(--red)">Failed — file may be too large. Try filtering by phone number.</span>';
+      st.innerHTML='<span style="color:var(--red)">Failed â€” file may be too large. Try filtering by phone number.</span>';
     }
   };
   r.onerror=()=>{st.innerHTML='<span style="color:var(--red)">Could not read file. Make sure it is a valid .xml export.</span>';};
   r.readAsText(file,'UTF-8');
 }
 
-/* ══════════ TIMELINE ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• TIMELINE â•â•â•â•â•â•â•â•â•â• */
 function renderTimeline(c){
   const tl=CC._tl||[];
   const ev=(CC._ev||[]).filter(e=>e.confirmed&&e.event_date).map(e=>({
@@ -2862,7 +4829,7 @@ async function submitTL(){
 }
 async function delTL(id){if(!confirm('Remove?'))return;await api('/api/timeline/'+id,{});await refresh();}
 
-/* ══════════ DEADLINES ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• DEADLINES â•â•â•â•â•â•â•â•â•â• */
 function renderDeadlines(c){
   const dl=CC._dl||[];
   const pend=dl.filter(d=>!d.completed), done_=dl.filter(d=>d.completed);
@@ -2877,17 +4844,17 @@ function renderDeadlines(c){
     ${pend.map(d=>{
       const over=d.due_date&&d.due_date<tod;
       return`<div class="dl-item">
-        <div class="dl-date" style="${over?'color:var(--red);font-weight:500':''}"">${d.due_date||'—'}${over?' ⚠':''}</div>
+        <div class="dl-date" style="${over?'color:var(--red);font-weight:500':''}"">${d.due_date||'â€”'}${over?' âš ':''}</div>
         <div class="dl-title">${esc(d.title)}</div>
         ${d.description?`<div style="font-size:10px;color:var(--ink3)">${esc(d.description)}</div>`:''}
         <div class="dl-acts">
-          <button class="xbtn ok" onclick="completeDL(${d.id})">✓ Done</button>
-          <button class="xbtn rm" onclick="delDL(${d.id})">✕</button>
+          <button class="xbtn ok" onclick="completeDL(${d.id})">âœ“ Done</button>
+          <button class="xbtn rm" onclick="delDL(${d.id})">âœ•</button>
         </div>
       </div>`;}).join('')}
   </div></div>`}
   ${done_.length?`<div class="section"><div class="st">Completed (${done_.length})</div><div class="card">
-    ${done_.map(d=>`<div class="dl-item done"><div class="dl-date">${d.due_date||'—'}</div><div class="dl-title">${esc(d.title)}</div></div>`).join('')}
+    ${done_.map(d=>`<div class="dl-item done"><div class="dl-date">${d.due_date||'â€”'}</div><div class="dl-title">${esc(d.title)}</div></div>`).join('')}
   </div></div>`:''}`;
 }
 function openAddDL(){
@@ -2896,7 +4863,7 @@ function openAddDL(){
       <div class="fg"><label>Due Date</label><input type="date" id="dl-d"></div>
       <div class="fg"><label>Title</label><input id="dl-t" placeholder="e.g. File response to motion"></div>
     </div>
-    <div class="fg"><label>Description (optional)</label><input id="dl-desc" placeholder="Any notes about this deadline…"></div>
+    <div class="fg"><label>Description (optional)</label><input id="dl-desc" placeholder="Any notes about this deadlineâ€¦"></div>
     <div class="br"><button class="btn btn-s" onclick="closeMo()">Cancel</button><button class="btn btn-p" onclick="submitDL()">Add</button></div>`);
 }
 async function submitDL(){
@@ -2907,22 +4874,22 @@ async function submitDL(){
 async function completeDL(id){await api('/api/deadlines/'+id+'/complete',{completed:1});await refresh();}
 async function delDL(id){if(!confirm('Delete?'))return;await api('/api/deadlines/'+id,{});await refresh();}
 
-/* ══════════ DOCUMENTS ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• DOCUMENTS â•â•â•â•â•â•â•â•â•â• */
 function renderDocuments(c){
   const docs=CC._docs||[];
   const types=[
-    {icon:'📋',label:'Motion',desc:'Ask the court for something'},
-    {icon:'📝',label:'Declaration',desc:'Sworn written statement'},
-    {icon:'✉️',label:'Demand Letter',desc:'Formal request to other party'},
-    {icon:'📅',label:'Parenting Plan',desc:'Detailed custody schedule'},
-    {icon:'⚖️',label:'Response / Answer',desc:'Reply to filed complaint'},
-    {icon:'📄',label:'Exhibit List',desc:'Index of all your evidence'},
-    {icon:'🏠',label:'Habitability Notice',desc:'Notify landlord of repair issues'},
-    {icon:'💰',label:'Small Claims Statement',desc:'State your claim plainly'},
-    {icon:'🛡️',label:'Protective Order Request',desc:'Request safety from the court'},
-    {icon:'📊',label:'Child Support Worksheet',desc:'Income &amp; expense breakdown'},
-    {icon:'📬',label:'Notice of Hearing',desc:'Notify parties of court date'},
-    {icon:'✍️',label:'Settlement Proposal',desc:'Propose resolution terms'},
+    {icon:'ðŸ“‹',label:'Motion',desc:'Ask the court for something'},
+    {icon:'ðŸ“',label:'Declaration',desc:'Sworn written statement'},
+    {icon:'âœ‰ï¸',label:'Demand Letter',desc:'Formal request to other party'},
+    {icon:'ðŸ“…',label:'Parenting Plan',desc:'Detailed custody schedule'},
+    {icon:'âš–ï¸',label:'Response / Answer',desc:'Reply to filed complaint'},
+    {icon:'ðŸ“„',label:'Exhibit List',desc:'Index of all your evidence'},
+    {icon:'ðŸ ',label:'Habitability Notice',desc:'Notify landlord of repair issues'},
+    {icon:'ðŸ’°',label:'Small Claims Statement',desc:'State your claim plainly'},
+    {icon:'ðŸ›¡ï¸',label:'Protective Order Request',desc:'Request safety from the court'},
+    {icon:'ðŸ“Š',label:'Child Support Worksheet',desc:'Income &amp; expense breakdown'},
+    {icon:'ðŸ“¬',label:'Notice of Hearing',desc:'Notify parties of court date'},
+    {icon:'âœï¸',label:'Settlement Proposal',desc:'Propose resolution terms'},
   ];
   c.innerHTML=`
   <div class="section">
@@ -2949,18 +4916,18 @@ function renderDocuments(c){
 function openDocGen(dtype){
   showMo('Generate: '+dtype,`
     <div class="notice n-info">SynJuris will draft a complete ${dtype} using your confirmed evidence and case details.</div>
-    <div class="notice n-warn">This is a self-help draft only — not legal advice. Review every word, fill in all [BRACKET PLACEHOLDERS], and consult an attorney before filing. If your court requires AI disclosure, add: <em>"Portions of this document were prepared with the assistance of AI software (SynJuris/Claude). The filer has reviewed and accepts responsibility for all content."</em></div>
-    <div class="fg"><label>Special Instructions (optional)</label><textarea id="di" placeholder="e.g. Focus on the March 15 incident, request expedited hearing, include attorney fee request…"></textarea></div>
+    <div class="notice n-warn">This is a self-help draft only â€” not legal advice. Review every word, fill in all [BRACKET PLACEHOLDERS], and consult an attorney before filing. If your court requires AI disclosure, add: <em>"Portions of this document were prepared with the assistance of AI software (SynJuris/Claude). The filer has reviewed and accepts responsibility for all content."</em></div>
+    <div class="fg"><label>Special Instructions (optional)</label><textarea id="di" placeholder="e.g. Focus on the March 15 incident, request expedited hearing, include attorney fee requestâ€¦"></textarea></div>
     <div id="dg-st" style="font-size:12px;color:var(--ink2)"></div>
     <div class="br"><button class="btn btn-s" onclick="closeMo()">Cancel</button><button class="btn btn-p" id="gen-btn" onclick="genDoc('${dtype}')">Generate Draft</button></div>`);
 }
 async function genDoc(dtype){
   const st=document.getElementById('dg-st');
   setBtnLoading('gen-btn', true, 'Generate Draft');
-  if(st) st.innerHTML=loadingHTML('Drafting your '+dtype+'…','small');
+  if(st) st.innerHTML=loadingHTML('Drafting your '+dtype+'â€¦','small');
   let d;
   try { d=await api('/api/generate-doc',{case_id:CC.id,doc_type:dtype,instructions:val('di')}); }
-  catch(e){ setBtnLoading('gen-btn',false,'Generate Draft'); if(st) st.innerHTML=errorHTML('Network error — try again.'); return; }
+  catch(e){ setBtnLoading('gen-btn',false,'Generate Draft'); if(st) st.innerHTML=errorHTML('Network error â€” try again.'); return; }
   setBtnLoading('gen-btn', false, 'Generate Draft');
   closeMo(); await refresh();
   if(d.content) viewDocContent(d.content, dtype, d.citations||[], d.id);
@@ -2971,9 +4938,9 @@ async function viewDoc(id){
 }
 function viewDocContent(content, title, citations, docId){
   const citBlock = renderCitationWarnings(citations||[]);
-  const docxBtn = docId ? `<button class="btn btn-s btn-p" onclick="downloadDocx(${docId})">↓ Download .docx</button>` : '';
+  const docxBtn = docId ? `<button class="btn btn-s btn-p" onclick="downloadDocx(${docId})">â†“ Download .docx</button>` : '';
   showMo(title,`
-    <div class="notice n-warn">Review carefully before filing. Fill in ALL [BRACKET PLACEHOLDERS]. This is a draft — not legal advice.</div>
+    <div class="notice n-warn">Review carefully before filing. Fill in ALL [BRACKET PLACEHOLDERS]. This is a draft â€” not legal advice.</div>
     ${citBlock}
     <div id="doc-pre" style="margin-top:12px;white-space:pre-wrap;font-family:var(--mono);font-size:12px;line-height:1.6;max-height:400px;overflow-y:auto">${esc(content)}</div>
     <div class="br" style="margin-top:12px">
@@ -2999,7 +4966,7 @@ function readinessReport(){
 }
 async function copyDoc(){await navigator.clipboard.writeText(document.getElementById('doc-pre').textContent);alert('Copied to clipboard.');}
 
-/* ══════════ FINANCIAL ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• FINANCIAL â•â•â•â•â•â•â•â•â•â• */
 function renderFinancial(c){
   const fin=CC._fin||[];
   const income=fin.filter(f=>f.direction==='income').reduce((a,f)=>a+(f.amount||0),0);
@@ -3008,7 +4975,7 @@ function renderFinancial(c){
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
     <p style="font-size:12px;color:var(--ink2)">Track case-related income, expenses, and support payments.</p>
     <div style="display:flex;gap:8px">
-      <button class="btn btn-s" onclick="openChildSupport()">⚖ Child Support Calc</button>
+      <button class="btn btn-s" onclick="openChildSupport()">âš– Child Support Calc</button>
       <button class="btn btn-s" onclick="openAddFin()">+ Add Entry</button>
     </div>
   </div>
@@ -3019,10 +4986,10 @@ function renderFinancial(c){
   </div>
   ${!fin.length?'<p style="font-size:12px;color:var(--ink3)">No financial entries yet.</p>':
   `<div class="card">${fin.map(f=>`<div class="fin-item">
-    <div style="font-size:10px;color:var(--ink3);min-width:80px">${f.entry_date||'—'}</div>
+    <div style="font-size:10px;color:var(--ink3);min-width:80px">${f.entry_date||'â€”'}</div>
     <div class="fin-desc">${esc(f.description)}<div style="font-size:10px;color:var(--ink3)">${f.category||''}</div></div>
     <div class="fin-amt ${f.direction}">${f.direction==='income'?'+':'-'}$${(f.amount||0).toFixed(2)}</div>
-    <button class="xbtn rm" onclick="delFin(${f.id})">✕</button>
+    <button class="xbtn rm" onclick="delFin(${f.id})">âœ•</button>
   </div>`).join('')}</div>`}`;
 }
 function openAddFin(){
@@ -3031,7 +4998,7 @@ function openAddFin(){
       <div class="fg"><label>Date</label><input type="date" id="fi-d"></div>
       <div class="fg"><label>Type</label><select id="fi-dir"><option value="expense">Expense</option><option value="income">Income / Payment received</option></select></div>
     </div>
-    <div class="fg"><label>Description</label><input id="fi-desc" placeholder="e.g. Child support payment received, filing fee, attorney consultation…"></div>
+    <div class="fg"><label>Description</label><input id="fi-desc" placeholder="e.g. Child support payment received, filing fee, attorney consultationâ€¦"></div>
     <div class="two-col">
       <div class="fg"><label>Amount ($)</label><input type="number" id="fi-amt" min="0" step="0.01" placeholder="0.00"></div>
       <div class="fg"><label>Category</label><select id="fi-cat">
@@ -3047,7 +5014,7 @@ async function submitFin(){
 }
 async function delFin(id){if(!confirm('Delete?'))return;await api('/api/financials/'+id,{});await refresh();}
 
-/* ══════════ HEARING PREP ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• HEARING PREP â•â•â•â•â•â•â•â•â•â• */
 function renderHearing(c){
   const docs=(CC._docs||[]).filter(d=>d.doc_type==='Hearing Prep Guide');
   c.innerHTML=`
@@ -3086,26 +5053,26 @@ async function genHearingPrep(){
   setBtnLoading('hp-btn', true, 'Generate Hearing Prep Guide');
   let d;
   try { d=await api('/api/hearing-prep',{case_id:CC.id}); }
-  catch(e){ setBtnLoading('hp-btn',false,'Generate Hearing Prep Guide'); alert('Network error — check your connection.'); return; }
+  catch(e){ setBtnLoading('hp-btn',false,'Generate Hearing Prep Guide'); alert('Network error â€” check your connection.'); return; }
   setBtnLoading('hp-btn', false, 'Generate Hearing Prep Guide');
   await refresh(); switchTab('hearing');
   if(d.content) viewDocContent(d.content,'Hearing Prep Guide');
 }
 
-/* ══════════ RESOURCES ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• RESOURCES â•â•â•â•â•â•â•â•â•â• */
 function renderResources(c){ /* privacy notice injected below */
   const sections=[
     {title:'Emergency / Safety',color:'red',items:[
-      {name:'National Domestic Violence Hotline',desc:'24/7 crisis support, safety planning, shelter referrals',contact:'1-800-799-7233 · thehotline.org'},
-      {name:'National Child Abuse Hotline (Childhelp)',desc:'Report abuse, connect with counselors',contact:'1-800-422-4453 · childhelp.org'},
+      {name:'National Domestic Violence Hotline',desc:'24/7 crisis support, safety planning, shelter referrals',contact:'1-800-799-7233 Â· thehotline.org'},
+      {name:'National Child Abuse Hotline (Childhelp)',desc:'Report abuse, connect with counselors',contact:'1-800-422-4453 Â· childhelp.org'},
       {name:'Crisis Text Line',desc:'Text HOME to 741741 for free 24/7 crisis counseling',contact:'Text HOME to 741741'},
       {name:'211 (United Way)',desc:'Local social services, shelter, food, legal aid referrals',contact:'Dial 2-1-1 or 211.org'},
     ]},
     {title:'Free Legal Help',color:'blue',items:[
-      {name:'Legal Services Corporation (LSC)',desc:'Free civil legal aid for low-income individuals — find local providers',contact:'lsc.gov/what-legal-aid'},
+      {name:'Legal Services Corporation (LSC)',desc:'Free civil legal aid for low-income individuals â€” find local providers',contact:'lsc.gov/what-legal-aid'},
       {name:'LawHelp.org',desc:'State-by-state free legal resources, forms, and pro bono referrals',contact:'lawhelp.org'},
-      {name:'American Bar Association — Free Legal Answers',desc:'Volunteer attorneys answer legal questions online for income-eligible users',contact:'abafreelegalanswers.org'},
-      {name:'Law School Clinics',desc:'Many law schools operate free clinics for family law, housing, and more — search your state',contact:'Search: "[your state] law school legal clinic"'},
+      {name:'American Bar Association â€” Free Legal Answers',desc:'Volunteer attorneys answer legal questions online for income-eligible users',contact:'abafreelegalanswers.org'},
+      {name:'Law School Clinics',desc:'Many law schools operate free clinics for family law, housing, and more â€” search your state',contact:'Search: "[your state] law school legal clinic"'},
       {name:'State Bar Lawyer Referral Service',desc:'Most state bars have referral services, some with reduced-fee initial consults',contact:'Search: "[your state] bar lawyer referral"'},
     ]},
     {title:'Court Self-Help',color:'green',items:[
@@ -3118,7 +5085,7 @@ function renderResources(c){ /* privacy notice injected below */
       {name:'National Parents Organization',desc:'Resources for parenting time, custody, and shared parenting advocacy',contact:'nationalparentsorganization.org'},
       {name:'Children\'s Rights Council',desc:'Resources and advocacy for children\'s access to both parents',contact:'crckids.org'},
       {name:'Child Welfare Information Gateway',desc:'Federal resource on child welfare, foster care, and family preservation',contact:'childwelfare.gov'},
-      {name:'RAINN (Sexual Assault)',desc:'Support for survivors of sexual violence',contact:'1-800-656-4673 · rainn.org'},
+      {name:'RAINN (Sexual Assault)',desc:'Support for survivors of sexual violence',contact:'1-800-656-4673 Â· rainn.org'},
     ]},
     {title:'Housing & Tenant Rights',color:'amber',items:[
       {name:'HUD Housing Counseling',desc:'Free or low-cost housing counseling, including tenant rights',contact:'hud.gov/housingcounseling'},
@@ -3134,7 +5101,7 @@ function renderResources(c){ /* privacy notice injected below */
         <div style="font-size:14px;font-weight:600;margin-bottom:6px">Work-Product Protection</div>
         <div style="font-size:13px;color:var(--ink2);line-height:1.7">
           Communications with cloud AI tools (ChatGPT, Claude.ai) have been ruled non-privileged in
-          federal proceedings because they involve third-party transmission — the AI company receives
+          federal proceedings because they involve third-party transmission â€” the AI company receives
           your data. SynJuris runs entirely on your machine. No data leaves your computer except the
           text of messages you send to the AI endpoint, transmitted directly to Anthropic under your
           own API key. Your evidence, documents, and strategy may retain work-product status that
@@ -3142,21 +5109,21 @@ function renderResources(c){ /* privacy notice injected below */
         </div>
       </div>
       <div class="card cb" style="margin-bottom:10px">
-        <div style="font-size:14px;font-weight:600;margin-bottom:6px">🔐 Encrypted Backup</div>
+        <div style="font-size:14px;font-weight:600;margin-bottom:6px">ðŸ” Encrypted Backup</div>
         <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:10px">
           Your data lives only on this machine. Back it up regularly. The encrypted backup uses
-          AES-256-GCM with PBKDF2 key derivation — the server never sees your passphrase.
+          AES-256-GCM with PBKDF2 key derivation â€” the server never sees your passphrase.
           Only you can decrypt it.
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-s btn-p" onclick="encryptedBackup()">🔐 Create Encrypted Backup</button>
-          <button class="btn btn-s" onclick="restoreEncryptedBackup()">↑ Restore from Backup</button>
+          <button class="btn btn-s btn-p" onclick="encryptedBackup()">ðŸ” Create Encrypted Backup</button>
+          <button class="btn btn-s" onclick="restoreEncryptedBackup()">â†‘ Restore from Backup</button>
         </div>
       </div>
       <div class="card cb">
         <div style="font-size:14px;font-weight:600;margin-bottom:6px">Citation Verification</div>
         <div style="font-size:13px;color:var(--ink2);line-height:1.7;margin-bottom:10px">
-          All case citations in generated documents are automatically checked against CourtListener —
+          All case citations in generated documents are automatically checked against CourtListener â€”
           a free, comprehensive federal and state court database. Citations that cannot be verified
           are flagged before you file. Courts have sanctioned pro se users up to $1,500 for
           AI-generated ghost citations.
@@ -3185,26 +5152,26 @@ async function manualCitCheck(){
   const cit = document.getElementById('cit-check-input')?.value?.trim();
   if(!cit){alert('Enter a citation to check.');return;}
   const el = document.getElementById('cit-check-result');
-  if(el) el.innerHTML='<span style="color:var(--ink3)">Checking CourtListener…</span>';
+  if(el) el.innerHTML='<span style="color:var(--ink3)">Checking CourtListenerâ€¦</span>';
   try{
     const r = await fetch('/api/verify-citation?citation='+encodeURIComponent(cit));
     const d = await r.json();
     if(!el) return;
     if(d.found){
-      el.innerHTML=`<span style="color:var(--green)">✓ Found: <strong>${esc(d.case_name||cit)}</strong>`+
-        (d.url?` <a href="${d.url}" target="_blank" style="color:var(--blue)">View on CourtListener ↗</a>`:'')+'</span>';
+      el.innerHTML=`<span style="color:var(--green)">âœ“ Found: <strong>${esc(d.case_name||cit)}</strong>`+
+        (d.url?` <a href="${d.url}" target="_blank" style="color:var(--blue)">View on CourtListener â†—</a>`:'')+'</span>';
     } else {
-      el.innerHTML=`<span style="color:var(--amber)">⚠ ${esc(d.warning||'Not found in CourtListener. Verify before filing.')}</span>`;
+      el.innerHTML=`<span style="color:var(--amber)">âš  ${esc(d.warning||'Not found in CourtListener. Verify before filing.')}</span>`;
     }
   }catch(e){
-    if(el) el.innerHTML='<span style="color:var(--amber)">Check unavailable — are you online?</span>';
+    if(el) el.innerHTML='<span style="color:var(--amber)">Check unavailable â€” are you online?</span>';
   }
 }
 
 
-/* ══════════ DYNAMICS ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• DYNAMICS â•â•â•â•â•â•â•â•â•â• */
 async function renderDynamics(c){
-  c.innerHTML='<div style="padding:20px 0;color:var(--ink3);font-size:12px">Computing case state…</div>';
+  c.innerHTML='<div style="padding:20px 0;color:var(--ink3);font-size:12px">Computing case stateâ€¦</div>';
   let snap,auditRows;
   let interp=null;
   try{[snap,auditRows,interp]=await Promise.all([
@@ -3224,7 +5191,7 @@ async function renderDynamics(c){
         <span style="font-size:11px;color:var(--ink3);margin-left:8px">${sub}</span></div>
         <div style="display:flex;align-items:baseline;gap:6px">
           <span style="font-family:var(--serif);font-size:26px;font-weight:600;color:${color}">${val}</span>
-          <span style="font-size:10px;color:var(--ink3)">/9 · ${lv[val]||''}</span>
+          <span style="font-size:10px;color:var(--ink3)">/9 Â· ${lv[val]||''}</span>
         </div>
       </div>
       <div style="background:var(--surface2);border-radius:4px;height:10px;overflow:hidden;border:1px solid var(--border)">
@@ -3248,23 +5215,23 @@ async function renderDynamics(c){
       <td style="padding:6px 8px;font-size:10px;color:var(--ink3)">${(r.created_at||'').slice(0,19)}</td>
       <td style="padding:6px 8px;font-size:11px;font-weight:500">${esc(r.action_type)}</td>
       <td style="padding:6px 8px;font-size:11px;font-family:var(--mono);color:var(--blue)">[${r.state_x},${r.state_y},${r.state_z}]</td>
-      <td style="padding:6px 8px;font-size:10px;font-family:var(--mono);color:var(--ink3)">${(r.trace_hash||'').slice(0,16)}…</td>
+      <td style="padding:6px 8px;font-size:10px;font-family:var(--mono);color:var(--ink3)">${(r.trace_hash||'').slice(0,16)}â€¦</td>
       <td style="padding:6px 8px"><button class="xbtn" onclick="verifyAudit(${r.id},this)">Verify</button></td>
     </tr>`).join(''))||`<tr><td colspan="5" style="padding:12px;font-size:12px;color:var(--ink3)">No AI calls logged yet.</td></tr>`;
   c.innerHTML=`
   <div style="background:var(--green-bg);border:1px solid var(--green-bd);border-radius:var(--rl);padding:14px 18px;margin-bottom:22px;display:flex;align-items:center;gap:14px">
-    <div style="font-size:24px">🛡️</div>
-    <div style="flex:1"><div style="font-size:10px;text-transform:uppercase;color:var(--green);font-weight:600;letter-spacing:.08em">Deterministic Audit Engine · Active</div>
+    <div style="font-size:24px">ðŸ›¡ï¸</div>
+    <div style="flex:1"><div style="font-size:10px;text-transform:uppercase;color:var(--green);font-weight:600;letter-spacing:.08em">Deterministic Audit Engine Â· Active</div>
     <div style="font-size:12px;color:var(--ink);margin-top:2px">Every AI analysis is backed by a traceable, recomputable state vector.</div></div>
     <div style="text-align:right;flex-shrink:0"><div style="font-size:9px;color:var(--ink3);text-transform:uppercase;letter-spacing:.06em">Current Hash</div>
     <div style="font-family:var(--mono);font-size:9px;color:var(--ink2);word-break:break-all;max-width:180px">${hash}</div></div>
   </div>
   <div class="section"><div class="st">Case State Vector</div><div class="card cb">
-    ${bar(st.x,xC,'Evidence Strength','x — weight of confirmed exhibits')}
+    ${bar(st.x,xC,'Evidence Strength','x â€” weight of confirmed exhibits')}
     ${interp_data ? `<div style="font-size:12px;color:var(--ink2);padding:6px 0 14px;border-bottom:1px solid var(--border2);margin-bottom:14px;line-height:1.6">${esc(interp_data.x_text)}</div>` : ''}
-    ${bar(st.y,yC,'Procedural Health','y — deadline completion ratio')}
+    ${bar(st.y,yC,'Procedural Health','y â€” deadline completion ratio')}
     ${interp_data ? `<div style="font-size:12px;color:var(--ink2);padding:6px 0 14px;border-bottom:1px solid var(--border2);margin-bottom:14px;line-height:1.6">${esc(interp_data.y_text)}</div>` : ''}
-    ${bar(st.z,zC,'Adversarial Pressure','z — severity of opponent patterns')}
+    ${bar(st.z,zC,'Adversarial Pressure','z â€” severity of opponent patterns')}
     ${interp_data ? `<div style="font-size:12px;color:var(--ink2);padding:6px 0 4px;line-height:1.6">${esc(interp_data.z_text)}</div>` : ''}
   </div></div>
   <div class="section"><div class="st">Scoring Inputs</div><div class="card cb"><div class="grid3" style="gap:10px">
@@ -3282,7 +5249,7 @@ async function renderDynamics(c){
         <th style="padding:7px 8px;text-align:left;color:var(--ink3);font-size:10px;text-transform:uppercase">Category</th>
         <th style="padding:7px 8px;text-align:left;color:var(--ink3);font-size:10px;text-transform:uppercase">Date</th>
         <th style="padding:7px 8px;text-align:left;color:var(--ink3);font-size:10px;text-transform:uppercase">Weight</th>
-        <th style="padding:7px 8px;text-align:left;color:var(--ink3);font-size:10px;text-transform:uppercase">Δ Applied</th>
+        <th style="padding:7px 8px;text-align:left;color:var(--ink3);font-size:10px;text-transform:uppercase">Î” Applied</th>
         <th style="padding:7px 8px;text-align:left;color:var(--ink3);font-size:10px;text-transform:uppercase">State After</th>
       </tr></thead><tbody>${deltaRows}</tbody>
     </table>
@@ -3300,10 +5267,10 @@ async function renderDynamics(c){
   </div></div>`;
 }
 async function verifyAudit(id,btn){
-  const orig=btn.textContent; btn.disabled=true; btn.textContent='…';
+  const orig=btn.textContent; btn.disabled=true; btn.textContent='â€¦';
   try{
     const r=await api('/api/audit/verify',{audit_id:id});
-    btn.textContent=r.verified?'✓ Match':'⚠ Changed';
+    btn.textContent=r.verified?'âœ“ Match':'âš  Changed';
     btn.style.color=r.verified?'var(--green)':'var(--red)';
     btn.style.borderColor=r.verified?'var(--green)':'var(--red)';
     const row=btn.closest('tr');
@@ -3314,10 +5281,10 @@ async function verifyAudit(id,btn){
   }catch(e){btn.textContent=orig;btn.disabled=false;}
 }
 
-/* ══════════ CHAT ══════════ */
-/* ══════════ ATTORNEY TAB ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• CHAT â•â•â•â•â•â•â•â•â•â• */
+/* â•â•â•â•â•â•â•â•â•â• ATTORNEY TAB â•â•â•â•â•â•â•â•â•â• */
 async function renderAttorney(c){
-  c.innerHTML='<div style="padding:20px 0;color:var(--ink3);font-size:12px">Loading attorney tools…</div>';
+  c.innerHTML='<div style="padding:20px 0;color:var(--ink3);font-size:12px">Loading attorney toolsâ€¦</div>';
 
   let timeEntries=[], portalTokens=[], portalQueue=[];
   try{
@@ -3354,7 +5321,7 @@ async function renderAttorney(c){
           <div style="font-size:11px;color:var(--ink3);margin-top:2px;word-break:break-all">
             http://localhost:${PORT}/portal/${t.token}
           </div>
-          <div style="font-size:10px;color:var(--ink3);margin-top:2px">Created ${(t.created_at||"").slice(0,10)} · Expires ${(t.expires_at||"").slice(0,10)}</div>
+          <div style="font-size:10px;color:var(--ink3);margin-top:2px">Created ${(t.created_at||"").slice(0,10)} Â· Expires ${(t.expires_at||"").slice(0,10)}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0">
           <button class="xbtn ok" onclick="copyPortalLink('http://localhost:${PORT}/portal/${t.token}')">Copy Link</button>
@@ -3367,13 +5334,13 @@ async function renderAttorney(c){
   // Portal queue
   const pqRows = portalQueue.filter(p=>p.approved===0).length ? portalQueue.filter(p=>p.approved===0).map(p=>`
     <div class="card cb" style="margin-bottom:8px;border-left:3px solid var(--amber)">
-      <div style="font-size:11px;color:var(--amber);font-weight:600;margin-bottom:4px">Pending Review · ${esc(p.category)} · ${(p.created_at||"").slice(0,10)}</div>
-      <div style="font-size:13px;color:var(--ink);margin-bottom:8px">${esc((p.content||"").slice(0,300))}${(p.content||"").length>300?"…":""}</div>
-      <div style="font-size:11px;color:var(--ink3);margin-bottom:8px">Source: ${esc(p.source||"")} · ${esc(p.event_date||"undated")}</div>
+      <div style="font-size:11px;color:var(--amber);font-weight:600;margin-bottom:4px">Pending Review Â· ${esc(p.category)} Â· ${(p.created_at||"").slice(0,10)}</div>
+      <div style="font-size:13px;color:var(--ink);margin-bottom:8px">${esc((p.content||"").slice(0,300))}${(p.content||"").length>300?"â€¦":""}</div>
+      <div style="font-size:11px;color:var(--ink3);margin-bottom:8px">Source: ${esc(p.source||"")} Â· ${esc(p.event_date||"undated")}</div>
       <div style="display:flex;gap:8px">
         <input id="pn-${p.id}" placeholder="Attorney note (optional)" style="flex:1;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);color:var(--ink);font-size:12px">
-        <button class="xbtn ok" onclick="approvePortal(${p.id})">✓ Approve</button>
-        <button class="xbtn rm" onclick="rejectPortal(${p.id})">✕ Reject</button>
+        <button class="xbtn ok" onclick="approvePortal(${p.id})">âœ“ Approve</button>
+        <button class="xbtn rm" onclick="rejectPortal(${p.id})">âœ• Reject</button>
       </div>
     </div>`).join('')
     : '<div style="font-size:12px;color:var(--ink3)">No pending submissions.</div>';
@@ -3395,7 +5362,7 @@ async function renderAttorney(c){
   <div class="section">
     <div class="st">Conflict Check</div>
     <div style="display:flex;gap:8px;margin-bottom:8px">
-      <input id="cc-name" placeholder="Search party name across all your cases…" style="flex:1;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);color:var(--ink);font-size:13px">
+      <input id="cc-name" placeholder="Search party name across all your casesâ€¦" style="flex:1;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);color:var(--ink);font-size:13px">
       <button class="btn btn-s btn-p" onclick="runConflict()">Check</button>
     </div>
     <div id="cc-result" style="font-size:12px;color:var(--ink3)">Enter a name to search all cases and parties.</div>
@@ -3429,7 +5396,7 @@ async function renderAttorney(c){
     <div class="st">Redacted Case Summary Export</div>
     <div style="font-size:13px;color:var(--ink2);margin-bottom:12px">
       Export a shareable summary showing the state vector, key arguments, statute citations,
-      and upcoming deadlines — with raw evidence content stripped. Safe to share with
+      and upcoming deadlines â€” with raw evidence content stripped. Safe to share with
       co-counsel, mediators, or clients.
     </div>
     <button class="btn btn-s btn-p" onclick="downloadRedacted()">Download Redacted JSON</button>
@@ -3473,17 +5440,17 @@ async function runConflict(){
   const el = document.getElementById('cc-result');
   if(!el) return;
   if(d.result==='conflict'){
-    el.innerHTML='<div style="color:var(--red);font-weight:600;margin-bottom:6px">⚠ Potential Conflict — '+d.matches.length+' match(es)</div>'+
+    el.innerHTML='<div style="color:var(--red);font-weight:600;margin-bottom:6px">âš  Potential Conflict â€” '+d.matches.length+' match(es)</div>'+
       d.matches.map(m=>`<div style="padding:6px 10px;background:var(--surface2);border-radius:var(--r);margin-bottom:4px;font-size:12px">
         <strong>${esc(m.party_name)}</strong> (${esc(m.role)}) in case: <em>${esc(m.case_title)}</em>
       </div>`).join('');
   } else {
-    el.innerHTML='<div style="color:var(--green);font-weight:500">✓ No conflicts found for "'+esc(name)+'"</div>';
+    el.innerHTML='<div style="color:var(--green);font-weight:500">âœ“ No conflicts found for "'+esc(name)+'"</div>';
   }
 }
 function openAddTE(){
   showMo('Add Time Entry',`
-    <div class="fg"><label>Description</label><input id="te-d" placeholder="e.g. Reviewed client portal submission, drafted motion…"></div>
+    <div class="fg"><label>Description</label><input id="te-d" placeholder="e.g. Reviewed client portal submission, drafted motionâ€¦"></div>
     <div class="two-col">
       <div class="fg"><label>Hours</label><input type="number" id="te-h" value="0.3" min="0.1" step="0.1"></div>
       <div class="fg"><label>Billable</label><select id="te-b"><option value="1">Yes</option><option value="0">No</option></select></div>
@@ -3532,11 +5499,11 @@ async function renderChat(c){
   const suggs=getChatSuggs(type);
   c.innerHTML=`
   <div id="chat-wrap">
-    <div class="notice n-warn" style="margin-bottom:10px">SynJuris is not a lawyer. Use AI answers to understand your situation — always consult a licensed attorney for final decisions.</div>
+    <div class="notice n-warn" style="margin-bottom:10px">SynJuris is not a lawyer. Use AI answers to understand your situation â€” always consult a licensed attorney for final decisions.</div>
     <div class="sugg-row">${suggs.map(s=>`<span class="sugg" onclick="sendSugg('${s.replace(/'/g,"\\\'")}')">${s}</span>`).join('')}</div>
     <div id="chat-msgs"></div>
     <div id="chat-ir">
-      <input id="chat-input" placeholder="Ask anything about your case, the law, what to say in court…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}">
+      <input id="chat-input" placeholder="Ask anything about your case, the law, what to say in courtâ€¦" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}">
       <button id="chat-send" onclick="sendChat()">Send</button>
     </div>
   </div>`;
@@ -3561,7 +5528,7 @@ async function sendChat(){
   const inp=document.getElementById('chat-input'), msg=inp.value.trim();
   if(!msg)return; inp.value=''; document.getElementById('chat-send').disabled=true;
   appendMsg('user',msg);
-  const typ=appendMsg('assistant','⟳ Thinking…',true);
+  const typ=appendMsg('assistant','âŸ³ Thinkingâ€¦',true);
   const d=await api('/api/chat',{case_id:CC.id,message:msg});
   typ.querySelector('.mb').textContent=d.reply;
   document.getElementById('chat-send').disabled=false; inp.focus(); scrollChat();
@@ -3574,15 +5541,15 @@ function appendMsg(role,content,temp=false){
 }
 function scrollChat(){const w=document.getElementById('chat-msgs');if(w)w.scrollTop=w.scrollHeight;}
 
-/* ══════════ NEW CASE WIZARD ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• NEW CASE WIZARD â•â•â•â•â•â•â•â•â•â• */
 let _nd={};
 function openNewCase(){showMo('New Case',ncStep1());}
 function ncStep1(){
   return`<div style="display:flex;gap:5px;margin-bottom:16px">${[1,2,3].map(i=>`<span class="sdot${i===1?' active':''}"></span>`).join('')}</div>
-  <div class="fg"><label>Case Title</label><input id="nc-title" placeholder="e.g. Smith custody matter · Jones v. Landlord"></div>
+  <div class="fg"><label>Case Title</label><input id="nc-title" placeholder="e.g. Smith custody matter Â· Jones v. Landlord"></div>
   <div class="two-col">
     <div class="fg"><label>Case Type</label><select id="nc-type">
-      <option value="">Select…</option>
+      <option value="">Selectâ€¦</option>
       ${['Child Custody','Divorce','Landlord-Tenant','Small Claims','Child Support','Protective Order','Eviction Defense','Guardianship','Name Change','Other'].map(t=>`<option>${t}</option>`).join('')}
     </select></div>
     <div class="fg"><label>State / Jurisdiction</label><input id="nc-jur" placeholder="e.g. Tennessee"></div>
@@ -3591,17 +5558,17 @@ function ncStep1(){
     <div class="fg"><label>Court Name (if known)</label><input id="nc-court" placeholder="e.g. Shelby County Circuit Court"></div>
     <div class="fg"><label>Case / Docket Number (if known)</label><input id="nc-num" placeholder="e.g. 2024-DV-001234"></div>
   </div>
-  <div class="br"><button class="btn btn-s" onclick="closeMo()">Cancel</button><button class="btn btn-p" onclick="nc2()">Next →</button></div>`;
+  <div class="br"><button class="btn btn-s" onclick="closeMo()">Cancel</button><button class="btn btn-p" onclick="nc2()">Next â†’</button></div>`;
 }
 function nc2(){
   const d={title:val('nc-title'),case_type:val('nc-type'),jurisdiction:val('nc-jur'),court_name:val('nc-court'),case_number:val('nc-num')};
   if(!d.title){alert('Please enter a case title.');return;}
   _nd=d;
-  showMo('New Case — Parties',`<div style="display:flex;gap:5px;margin-bottom:16px">${[1,2,3].map(i=>`<span class="sdot${i===2?' active':i<2?' done':''}"></span>`).join('')}</div>
+  showMo('New Case â€” Parties',`<div style="display:flex;gap:5px;margin-bottom:16px">${[1,2,3].map(i=>`<span class="sdot${i===2?' active':i<2?' done':''}"></span>`).join('')}</div>
   <p style="font-size:12px;color:var(--ink2);margin-bottom:12px">Add the key people. You can add more later.</p>
   <div id="party-list">${partyRow(0,'','')}${partyRow(1,'','')}</div>
   <button class="btn btn-s" style="margin-bottom:12px" onclick="addPRow()">+ Add Person</button>
-  <div class="br"><button class="btn btn-s" onclick="showMo('New Case',ncStep1())">← Back</button><button class="btn btn-p" onclick="nc3()">Next →</button></div>`);
+  <div class="br"><button class="btn btn-s" onclick="showMo('New Case',ncStep1())">â† Back</button><button class="btn btn-p" onclick="nc3()">Next â†’</button></div>`);
 }
 let _prc=2;
 function partyRow(i,name='',role=''){
@@ -3616,15 +5583,15 @@ function nc3(){
   const names=[...document.querySelectorAll('.pn')].map(e=>e.value);
   const roles=[...document.querySelectorAll('.pr')].map(e=>e.value);
   _nd.parties=names.map((n,i)=>({name:n,role:roles[i]})).filter(p=>p.name.trim());
-  showMo('New Case — Details',`<div style="display:flex;gap:5px;margin-bottom:16px">${[1,2,3].map(i=>`<span class="sdot${i===3?' active':' done'}"></span>`).join('')}</div>
+  showMo('New Case â€” Details',`<div style="display:flex;gap:5px;margin-bottom:16px">${[1,2,3].map(i=>`<span class="sdot${i===3?' active':' done'}"></span>`).join('')}</div>
   <div class="two-col">
     <div class="fg"><label>Filing / Response Deadline</label><input type="date" id="nc-fdl"></div>
     <div class="fg"><label>Hearing Date (if scheduled)</label><input type="date" id="nc-hd"></div>
   </div>
-  <div class="fg"><label>Your Goals</label><textarea id="nc-goals" placeholder="What outcome are you hoping for? e.g. Primary custody, reduction in rent, return of deposit…"></textarea></div>
-  <div class="fg"><label>Background Notes</label><textarea id="nc-notes" placeholder="Brief summary of the situation…"></textarea></div>
+  <div class="fg"><label>Your Goals</label><textarea id="nc-goals" placeholder="What outcome are you hoping for? e.g. Primary custody, reduction in rent, return of depositâ€¦"></textarea></div>
+  <div class="fg"><label>Background Notes</label><textarea id="nc-notes" placeholder="Brief summary of the situationâ€¦"></textarea></div>
   <div class="notice n-info" style="margin-top:8px">Everything is saved locally on your computer only.</div>
-  <div class="br"><button class="btn btn-s" onclick="nc2()">← Back</button><button class="btn btn-p" onclick="createCase()">Create Case</button></div>`);
+  <div class="br"><button class="btn btn-s" onclick="nc2()">â† Back</button><button class="btn btn-p" onclick="createCase()">Create Case</button></div>`);
 }
 async function createCase(){
   _nd.filing_deadline=val('nc-fdl'); _nd.hearing_date=val('nc-hd');
@@ -3633,7 +5600,7 @@ async function createCase(){
   closeMo(); await loadCases(); await loadCase(d.id);
 }
 
-/* ══════════ EDIT CASE ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• EDIT CASE â•â•â•â•â•â•â•â•â•â• */
 function openEditCase(){
   showMo('Edit Case',`
     <div class="fg"><label>Case Title</label><input id="ec-t" value="${esc(CC.title)}"></div>
@@ -3693,7 +5660,7 @@ function backupDB(){
 }
 
 function fullArchive(){
-  if(!confirm('This will download your entire SynJuris archive — database + all uploaded files — as a single zip file. Keep it somewhere safe.')) return;
+  if(!confirm('This will download your entire SynJuris archive â€” database + all uploaded files â€” as a single zip file. Keep it somewhere safe.')) return;
   const a = document.createElement('a');
   a.href = '/api/backup-full';
   a.download = '';
@@ -3702,7 +5669,7 @@ function fullArchive(){
   document.body.removeChild(a);
 }
 
-/* ══════════ UTILS ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• UTILS â•â•â•â•â•â•â•â•â•â• */
 async function api(url,body){
   if(!body) return fetch(url).then(r=>r.json());
   const method = url.includes('/api/cases/') && !url.split('/').slice(-1)[0].match(/\d/) ? 'GET' : 'POST';
@@ -3719,18 +5686,18 @@ function today(){return new Date().toISOString().slice(0,10);}
 function showMo(title,body){document.getElementById('mo-title').textContent=title;document.getElementById('mo-body').innerHTML=body;document.getElementById('mo').classList.add('open');}
 function closeMo(){document.getElementById('mo').classList.remove('open');}
 
-/* ══════════ ARGUMENTS TAB ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• ARGUMENTS TAB â•â•â•â•â•â•â•â•â•â• */
 async function renderArguments(c){
   c.innerHTML=`
   <div class="notice n-warn" style="margin-bottom:14px">
-    <strong>Important:</strong> AI-generated arguments are a starting point — not legal advice. Verify every statute cited and confirm every factual claim before using this in court.
+    <strong>Important:</strong> AI-generated arguments are a starting point â€” not legal advice. Verify every statute cited and confirm every factual claim before using this in court.
     <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-weight:500">
       <input type="checkbox" id="arg-ack" onchange="document.getElementById('arg-btn').disabled=!this.checked">
       I understand this is AI analysis, not legal advice, and I will verify before relying on it
     </label>
   </div>
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-    <p style="font-size:12px;color:var(--ink2)">SynJuris organizes your confirmed evidence by legal issue — grouping exhibits together so you can see what supports each part of your case.</p>
+    <p style="font-size:12px;color:var(--ink2)">SynJuris organizes your confirmed evidence by legal issue â€” grouping exhibits together so you can see what supports each part of your case.</p>
     <button class="btn btn-p" id="arg-btn" onclick="buildArguments()" disabled>Organize Evidence by Issue</button>
   </div><div id="arg-results"></div>`;
 }
@@ -3738,10 +5705,10 @@ async function renderArguments(c){
 async function buildArguments(){
   const res=document.getElementById('arg-results');
   setBtnLoading('arg-btn', true, 'Re-Organize Evidence');
-  res.innerHTML=loadingHTML('Organizing your evidence by legal issue…');
+  res.innerHTML=loadingHTML('Organizing your evidence by legal issueâ€¦');
   let d;
   try { d=await api('/api/build-arguments',{case_id:CC.id}); }
-  catch(e){ res.innerHTML=errorHTML('Network error — check your connection and try again.'); setBtnLoading('arg-btn',false,'Rebuild Arguments'); return; }
+  catch(e){ res.innerHTML=errorHTML('Network error â€” check your connection and try again.'); setBtnLoading('arg-btn',false,'Rebuild Arguments'); return; }
   setBtnLoading('arg-btn', false, 'Re-Organize Evidence');
   if(d.error){res.innerHTML=`<div class="notice n-red">${esc(d.error)}</div>`;return;}
   if(d.raw){res.innerHTML=`<div class="card cb"><pre style="white-space:pre-wrap;font-size:11px">${esc(d.raw)}</pre></div>`;return;}
@@ -3777,17 +5744,17 @@ async function buildArguments(){
   }
   if(d.evidence_gaps?.length){
     html+=`<div class="section"><div class="st" style="color:var(--amber)">Evidence Gaps</div><div class="card cb">
-      ${d.evidence_gaps.map(g=>`<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border-light)">⚠ ${esc(g)}</div>`).join('')}
+      ${d.evidence_gaps.map(g=>`<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--border-light)">âš  ${esc(g)}</div>`).join('')}
     </div></div>`;
   }
   res.innerHTML=html;
 }
 
-/* ══════════ STRATEGY TAB ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• STRATEGY TAB â•â•â•â•â•â•â•â•â•â• */
 async function renderStrategy(c){
   c.innerHTML=`
   <div class="notice n-warn" style="margin-bottom:14px">
-    <strong>Important:</strong> These tools generate strategic analysis to help you prepare — they are not legal advice and the AI can be wrong. Always verify with a licensed attorney when possible.
+    <strong>Important:</strong> These tools generate strategic analysis to help you prepare â€” they are not legal advice and the AI can be wrong. Always verify with a licensed attorney when possible.
     <label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-weight:500">
       <input type="checkbox" id="strat-ack" onchange="['theory-btn','adv-btn','contra-btn'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=!this.checked})">
       I understand this is AI analysis. I will verify before relying on it.
@@ -3805,10 +5772,10 @@ async function renderStrategy(c){
 async function buildTheory(){
   const res=document.getElementById('strategy-results');
   stratLock(true);
-  res.innerHTML=loadingHTML('Organizing your case summary…');
+  res.innerHTML=loadingHTML('Organizing your case summaryâ€¦');
   let d;
   try { d=await api('/api/case-theory',{case_id:CC.id}); }
-  catch(e){ res.innerHTML=errorHTML('Network error — try again.'); stratLock(false); return; }
+  catch(e){ res.innerHTML=errorHTML('Network error â€” try again.'); stratLock(false); return; }
   stratLock(false);
   if(d.raw||d.error){res.innerHTML=`<div class="card cb"><pre style="white-space:pre-wrap;font-size:11px">${esc(d.raw||d.error)}</pre></div>`;return;}
 
@@ -3850,15 +5817,15 @@ async function buildTheory(){
 async function buildAdversarial(){
   const res=document.getElementById('strategy-results');
   stratLock(true);
-  res.innerHTML=loadingHTML('Analyzing likely opposition arguments…');
+  res.innerHTML=loadingHTML('Analyzing likely opposition argumentsâ€¦');
   let d;
   try { d=await api('/api/adversarial',{case_id:CC.id}); }
-  catch(e){ res.innerHTML=errorHTML('Network error — try again.'); stratLock(false); return; }
+  catch(e){ res.innerHTML=errorHTML('Network error â€” try again.'); stratLock(false); return; }
   stratLock(false);
   if(d.raw||d.error){res.innerHTML=`<div class="card cb"><pre style="white-space:pre-wrap;font-size:11px">${esc(d.raw||d.error)}</pre></div>`;return;}
 
   let html=`<div class="section"><div class="st" style="color:var(--red)">Opposition Argument Analysis</div>`;
-  html+=`<div class="notice n-warn" style="margin-bottom:12px">This analysis helps you anticipate arguments the other side may raise so you can prepare responses. Use it to prepare — not to get discouraged.</div>`;
+  html+=`<div class="notice n-warn" style="margin-bottom:12px">This analysis helps you anticipate arguments the other side may raise so you can prepare responses. Use it to prepare â€” not to get discouraged.</div>`;
   if(d.opposing_strategy){
     html+=`<div class="card cb" style="margin-bottom:12px"><strong style="font-size:11px">Their overall strategy:</strong><div style="font-size:12px;margin-top:4px">${esc(d.opposing_strategy)}</div></div>`;
   }
@@ -3907,10 +5874,10 @@ async function buildAdversarial(){
 async function detectContradictions(){
   const res=document.getElementById('strategy-results');
   stratLock(true);
-  res.innerHTML=loadingHTML('Scanning your timeline for gaps and contradictions…');
+  res.innerHTML=loadingHTML('Scanning your timeline for gaps and contradictionsâ€¦');
   let d;
   try { d=await api('/api/detect-contradictions',{case_id:CC.id}); }
-  catch(e){ res.innerHTML=errorHTML('Network error — try again.'); stratLock(false); return; }
+  catch(e){ res.innerHTML=errorHTML('Network error â€” try again.'); stratLock(false); return; }
   stratLock(false);
   if(d.raw||d.error){res.innerHTML=`<div class="card cb"><pre style="white-space:pre-wrap;font-size:11px">${esc(d.raw||d.error)}</pre></div>`;return;}
 
@@ -3923,7 +5890,7 @@ async function detectContradictions(){
       const sev={'high':'n-red','medium':'n-warn','low':'n-info'}[con.severity]||'n-info';
       html+=`<div class="notice ${sev}" style="margin-bottom:8px">
         <div style="font-weight:500;margin-bottom:3px">${esc(con.description)}</div>
-        ${con.recommendation?`<div style="margin-top:4px;font-size:11px">→ ${esc(con.recommendation)}</div>`:''}
+        ${con.recommendation?`<div style="margin-top:4px;font-size:11px">â†’ ${esc(con.recommendation)}</div>`:''}
       </div>`;
     });
   } else {
@@ -3931,7 +5898,7 @@ async function detectContradictions(){
   }
   if(d.timeline_gaps?.length){
     html+=`<div class="st" style="margin-top:12px;color:var(--amber)">Documentation Gaps</div>`;
-    d.timeline_gaps.forEach(g=>{ html+=`<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border-light)">⚠ ${esc(g)}</div>`; });
+    d.timeline_gaps.forEach(g=>{ html+=`<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border-light)">âš  ${esc(g)}</div>`; });
   }
   html+=`<div class="grid2" style="margin-top:12px">
     ${d.strongest_period?`<div class="stat good"><div class="stat-l">Strongest period</div><div style="font-size:12px;margin-top:4px">${esc(d.strongest_period)}</div></div>`:''}
@@ -3940,7 +5907,7 @@ async function detectContradictions(){
   res.innerHTML=html;
 }
 
-/* ══════════ PDF EXPORT ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• PDF EXPORT â•â•â•â•â•â•â•â•â•â• */
 function exportPDF(){
   if(!CC) return;
   const a=document.createElement('a');
@@ -3952,19 +5919,19 @@ function exportPDF(){
 }
 
 
-/* ══════════ COURTROOM VIEW ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• COURTROOM VIEW â•â•â•â•â•â•â•â•â•â• */
 // High-contrast, large-text mode for use at the podium.
-// Opens a standalone full-screen window — separate from the main app.
+// Opens a standalone full-screen window â€” separate from the main app.
 
 function renderCourtroom(c){
   c.innerHTML=`
   <div style="max-width:640px">
     <p style="font-size:12px;color:var(--ink2);margin-bottom:16px">
       Opens a full-screen, high-contrast view designed for reading at a podium or from a tablet in the courtroom.
-      Your opening statement, key points, evidence list, and counters — all in large readable text with a dark background.
+      Your opening statement, key points, evidence list, and counters â€” all in large readable text with a dark background.
     </p>
     <div class="notice n-info" style="margin-bottom:16px">
-      Tip: Generate your <strong>Hearing Prep Guide</strong> and <strong>Case Theory</strong> first — Courtroom View pulls from those.
+      Tip: Generate your <strong>Hearing Prep Guide</strong> and <strong>Case Theory</strong> first â€” Courtroom View pulls from those.
     </div>
     <button class="btn btn-p" style="font-size:14px;padding:12px 28px" onclick="openCourtroomView()">Open Courtroom View</button>
   </div>`;
@@ -3974,17 +5941,17 @@ function openCourtroomView(){
   window.open('/api/cases/'+CC.id+'/courtroom','_blank','width=1000,height=750,toolbar=0,menubar=0,scrollbars=1');
 }
 
-/* ══════════ LOADING STATE HELPER ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• LOADING STATE HELPER â•â•â•â•â•â•â•â•â•â• */
 function loadingHTML(msg, size){
   const fs = size==='small' ? '11px' : '12px';
   return `<div style="display:flex;align-items:center;gap:10px;padding:14px 0;color:var(--ink2);font-size:${fs}">
-    <span class="spin" style="font-size:18px;display:inline-block">⟳</span>
-    <span>${esc(msg)}<br><span style="font-size:10px;color:var(--ink3)">This may take 20–30 seconds — Claude is thinking.</span></span>
+    <span class="spin" style="font-size:18px;display:inline-block">âŸ³</span>
+    <span>${esc(msg)}<br><span style="font-size:10px;color:var(--ink3)">This may take 20â€“30 seconds â€” Claude is thinking.</span></span>
   </div>`;
 }
 function errorHTML(msg){
   return `<div class="notice n-red" style="display:flex;align-items:center;gap:8px">
-    <span style="font-size:16px">⚠</span><span>${esc(msg)}</span>
+    <span style="font-size:16px">âš </span><span>${esc(msg)}</span>
   </div>`;
 }
 
@@ -3996,7 +5963,7 @@ function setBtnLoading(id, loading, doneText){
   if(loading){
     _btnOrigText[id] = doneText || btn.textContent;
     btn.disabled = true;
-    btn.innerHTML = '<span class="spin">⟳</span> Working…';
+    btn.innerHTML = '<span class="spin">âŸ³</span> Workingâ€¦';
   } else {
     btn.disabled = false;
     btn.textContent = doneText || _btnOrigText[id] || btn.textContent;
@@ -4016,16 +5983,16 @@ function stratLock(loading){
 
 function moClick(e){if(e.target===document.getElementById('mo'))closeMo();}
 
-/* ══════════ ROADMAP ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• ROADMAP â•â•â•â•â•â•â•â•â•â• */
 async function renderRoadmap(c){
-  c.innerHTML=loadingHTML('Building your case roadmap…');
+  c.innerHTML=loadingHTML('Building your case roadmapâ€¦');
   let d;
   try { d=await api('/api/roadmap',{case_id:CC.id}); }
   catch(e){ c.innerHTML=errorHTML('Could not load roadmap. Check your connection.'); return; }
   if(d.raw||d.error){ c.innerHTML=`<div class="card cb"><pre style="white-space:pre-wrap;font-size:11px">${esc(d.raw||d.error)}</pre></div>`; return; }
 
   const pri={'urgent':'n-red','important':'n-warn','optional':'n-info'};
-  const priLabel={'urgent':'🔴 Urgent','important':'🟡 Important','optional':'🔵 Optional'};
+  const priLabel={'urgent':'ðŸ”´ Urgent','important':'ðŸŸ¡ Important','optional':'ðŸ”µ Optional'};
   let html=`<div class="section">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
       <div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden">
@@ -4040,7 +6007,7 @@ async function renderRoadmap(c){
     </div>`;
 
   if(d.warning){
-    html+=`<div class="notice n-red" style="margin-bottom:16px"><strong>⚠ Don't miss:</strong> ${esc(d.warning)}</div>`;
+    html+=`<div class="notice n-red" style="margin-bottom:16px"><strong>âš  Don't miss:</strong> ${esc(d.warning)}</div>`;
   }
 
   if(d.immediate_next_steps?.length){
@@ -4051,10 +6018,10 @@ async function renderRoadmap(c){
           <div style="font-weight:600;font-size:13px">${esc(s.action)}</div>
           <div style="font-size:10px;color:var(--ink3);white-space:nowrap;margin-left:8px">${priLabel[s.priority]||''}</div>
         </div>
-        ${s.deadline?`<div style="font-size:11px;margin-bottom:4px">📅 Deadline: <strong>${esc(s.deadline)}</strong></div>`:''}
+        ${s.deadline?`<div style="font-size:11px;margin-bottom:4px">ðŸ“… Deadline: <strong>${esc(s.deadline)}</strong></div>`:''}
         <div style="font-size:12px;color:var(--ink2);margin-bottom:4px">${esc(s.how_to)}</div>
-        ${s.form_needed?`<div style="font-size:11px;color:var(--ink3)">📄 Form needed: ${esc(s.form_needed)}</div>`:''}
-        ${s.county_note?`<div style="font-size:11px;color:var(--amber);margin-top:4px">📍 ${esc(s.county_note)}</div>`:''}
+        ${s.form_needed?`<div style="font-size:11px;color:var(--ink3)">ðŸ“„ Form needed: ${esc(s.form_needed)}</div>`:''}
+        ${s.county_note?`<div style="font-size:11px;color:var(--amber);margin-top:4px">ðŸ“ ${esc(s.county_note)}</div>`:''}
       </div>`;
     });
   }
@@ -4063,10 +6030,10 @@ async function renderRoadmap(c){
     html+=`<div class="st" style="margin-top:16px">Decision Points</div>`;
     d.branch_points.forEach(bp=>{
       html+=`<div class="card cb" style="margin-bottom:10px">
-        <div style="font-size:12px;font-weight:600;margin-bottom:8px">❓ ${esc(bp.decision)}</div>
+        <div style="font-size:12px;font-weight:600;margin-bottom:8px">â“ ${esc(bp.decision)}</div>
         <div class="grid2">
-          <div style="background:var(--green-bg);border-radius:6px;padding:10px;font-size:11px"><strong style="color:var(--green)">If yes →</strong><br>${esc(bp.if_yes)}</div>
-          <div style="background:var(--red-bg,rgba(220,50,50,.06));border-radius:6px;padding:10px;font-size:11px"><strong style="color:var(--red)">If no →</strong><br>${esc(bp.if_no)}</div>
+          <div style="background:var(--green-bg);border-radius:6px;padding:10px;font-size:11px"><strong style="color:var(--green)">If yes â†’</strong><br>${esc(bp.if_yes)}</div>
+          <div style="background:var(--red-bg,rgba(220,50,50,.06));border-radius:6px;padding:10px;font-size:11px"><strong style="color:var(--red)">If no â†’</strong><br>${esc(bp.if_no)}</div>
         </div>
       </div>`;
     });
@@ -4078,34 +6045,34 @@ async function renderRoadmap(c){
       html+=`<div style="padding:12px 16px;border-bottom:1px solid var(--border-light)">
         <div style="font-size:12px;font-weight:600;margin-bottom:4px">${i+d.stage_number+1}. ${esc(s.stage)}</div>
         <div style="font-size:11px;color:var(--ink2);margin-bottom:6px">${esc(s.description)}</div>
-        ${s.key_actions?.map(a=>`<div style="font-size:11px;color:var(--ink3)">• ${esc(a)}</div>`).join('')||''}
+        ${s.key_actions?.map(a=>`<div style="font-size:11px;color:var(--ink3)">â€¢ ${esc(a)}</div>`).join('')||''}
       </div>`;
     });
     html+=`</div>`;
   }
 
   if(d.local_resources){
-    html+=`<div class="notice n-info" style="margin-top:16px"><strong>📍 Local Resources:</strong> ${esc(d.local_resources)}</div>`;
+    html+=`<div class="notice n-info" style="margin-top:16px"><strong>ðŸ“ Local Resources:</strong> ${esc(d.local_resources)}</div>`;
   }
 
   if(d.completed_steps?.length){
     html+=`<div class="st" style="margin-top:16px">Completed</div><div class="card">`;
     d.completed_steps.forEach(s=>{
       html+=`<div style="padding:8px 16px;border-bottom:1px solid var(--border-light);font-size:12px">
-        <span style="color:var(--green)">✓</span> ${esc(s.step)}
-        ${s.notes?`<span style="color:var(--ink3);font-size:11px"> — ${esc(s.notes)}</span>`:''}
+        <span style="color:var(--green)">âœ“</span> ${esc(s.step)}
+        ${s.notes?`<span style="color:var(--ink3);font-size:11px"> â€” ${esc(s.notes)}</span>`:''}
       </div>`;
     });
     html+=`</div>`;
   }
 
   html+=`<div style="margin-top:16px;text-align:right">
-    <button class="btn btn-s" onclick="renderRoadmap(document.getElementById('tc'))">↺ Refresh Roadmap</button>
+    <button class="btn btn-s" onclick="renderRoadmap(document.getElementById('tc'))">â†º Refresh Roadmap</button>
   </div></div>`;
   c.innerHTML=html;
 }
 
-/* ══════════ MOTIONS ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• MOTIONS â•â•â•â•â•â•â•â•â•â• */
 function renderMotions(c){
   const motionTypes=[
     'Motion for Contempt','Motion to Modify Custody','Motion to Modify Child Support',
@@ -4124,14 +6091,14 @@ function renderMotions(c){
         <label>Motion Type</label>
         <select id="motion-type">
           ${motionTypes.map(m=>`<option>${m}</option>`).join('')}
-          <option value="custom">Custom (type below)…</option>
+          <option value="custom">Custom (type below)â€¦</option>
         </select>
       </div>
       <div class="fg" id="custom-motion-wrap" style="display:none;margin-bottom:12px">
         <label>Custom Motion Name</label>
         <input id="custom-motion-name" placeholder="e.g. Motion to Reinstate Parenting Time">
       </div>
-      <div class="notice n-warn" style="margin-bottom:12px">The AI will use your confirmed evidence and case details. Review carefully before filing — this is a draft, not legal advice.</div>
+      <div class="notice n-warn" style="margin-bottom:12px">The AI will use your confirmed evidence and case details. Review carefully before filing â€” this is a draft, not legal advice.</div>
       <button class="btn btn-p" id="motion-btn" onclick="genMotion()">Generate Motion</button>
     </div>
     <div id="motion-result"></div>
@@ -4153,10 +6120,10 @@ async function genMotion(){
   if(!motionType){alert('Please enter a motion type.');return;}
   const res=document.getElementById('motion-result');
   setBtnLoading('motion-btn',true,'Generate Motion');
-  res.innerHTML=loadingHTML('Drafting your '+motionType+'… This may take 30-60 seconds.');
+  res.innerHTML=loadingHTML('Drafting your '+motionType+'â€¦ This may take 30-60 seconds.');
   let d;
   try { d=await api('/api/motion-template',{case_id:CC.id,motion_type:motionType}); }
-  catch(e){ res.innerHTML=errorHTML('Network error — try again.'); setBtnLoading('motion-btn',false,'Generate Motion'); return; }
+  catch(e){ res.innerHTML=errorHTML('Network error â€” try again.'); setBtnLoading('motion-btn',false,'Generate Motion'); return; }
   setBtnLoading('motion-btn',false,'Generate Motion');
   if(d.error){ res.innerHTML=errorHTML(d.error); return; }
   await refresh();
@@ -4169,7 +6136,7 @@ async function genMotion(){
   </div>`;
 }
 
-/* ══════════ COMMS LOG ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• COMMS LOG â•â•â•â•â•â•â•â•â•â• */
 function renderComms(c){
   const comms=(CC._ev||[]).filter(e=>e.source?.startsWith('Comm Log'));
   c.innerHTML=`
@@ -4184,9 +6151,9 @@ function renderComms(c){
       <span class="badge ${e.confirmed?'green':'amber'}">${e.confirmed?'Confirmed':'Needs review'}</span>
     </div>
     <div class="ev-body">
-      <div style="font-size:10px;color:var(--ink3);margin-bottom:3px">${esc(e.source?.replace('Comm Log — ',''))}</div>
-      <div class="ev-content">${esc((e.content||'').slice(0,200))}${(e.content||'').length>200?'…':''}</div>
-      ${e.category&&e.category!=='Communication'?`<div style="margin-top:4px"><span class="badge red">⚑ ${esc(e.category)}</span></div>`:''}
+      <div style="font-size:10px;color:var(--ink3);margin-bottom:3px">${esc(e.source?.replace('Comm Log â€” ',''))}</div>
+      <div class="ev-content">${esc((e.content||'').slice(0,200))}${(e.content||'').length>200?'â€¦':''}</div>
+      ${e.category&&e.category!=='Communication'?`<div style="margin-top:4px"><span class="badge red">âš‘ ${esc(e.category)}</span></div>`:''}
     </div>
     <div class="ev-acts">
       ${!e.confirmed?`<button class="xbtn ok" onclick="confirmEv(${e.id})">Confirm as Evidence</button>`:''}
@@ -4208,7 +6175,7 @@ function openAddComm(){
       <option value="sent">Sent (I contacted them)</option>
     </select></div>
     <div class="fg"><label>Content / Summary</label>
-      <textarea id="cm-content" rows="5" placeholder="Paste the message or summarize what was said…" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;color:var(--ink);font-size:13px;resize:vertical"></textarea>
+      <textarea id="cm-content" rows="5" placeholder="Paste the message or summarize what was saidâ€¦" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;color:var(--ink);font-size:13px;resize:vertical"></textarea>
     </div>
     <div class="notice n-info" style="margin-bottom:8px">SynJuris will automatically flag this if it matches known violation patterns.</div>
     <div class="br"><button class="btn btn-s" onclick="closeMo()">Cancel</button><button class="btn btn-p" onclick="submitComm()">Log It</button></div>`);
@@ -4226,14 +6193,14 @@ async function submitComm(){
   });
   closeMo();await refresh();
   if(d.flagged&&d.flags?.length){
-    setTimeout(()=>alert('⚑ This communication was flagged for: '+d.flags.join(', ')+'\n\nIt has been added to your evidence queue for review.'),300);
+    setTimeout(()=>alert('âš‘ This communication was flagged for: '+d.flags.join(', ')+'\n\nIt has been added to your evidence queue for review.'),300);
   }
 }
 
-/* ══════════ CHILD SUPPORT CALCULATOR ══════════ */
+/* â•â•â•â•â•â•â•â•â•â• CHILD SUPPORT CALCULATOR â•â•â•â•â•â•â•â•â•â• */
 function openChildSupport(){
   showMo('Child Support Calculator',`
-    <p style="font-size:12px;color:var(--ink2);margin-bottom:14px">Estimates support based on your state formula. This is an estimate only — verify with the court.</p>
+    <p style="font-size:12px;color:var(--ink2);margin-bottom:14px">Estimates support based on your state formula. This is an estimate only â€” verify with the court.</p>
     <div class="two-col">
       <div class="fg"><label>Your Gross Monthly Income ($)</label><input type="number" id="cs-mine" min="0" placeholder="0"></div>
       <div class="fg"><label>Other Parent Monthly Income ($)</label><input type="number" id="cs-theirs" min="0" placeholder="0"></div>
@@ -4256,7 +6223,7 @@ async function calcSupport(){
   const kids=parseInt(document.getElementById('cs-kids').value)||1;
   if(!mine&&!theirs){alert('Please enter at least one income amount.');return;}
   setBtnLoading('cs-btn',true,'Calculate');
-  document.getElementById('cs-result').innerHTML=loadingHTML('Calculating using your state formula…','small');
+  document.getElementById('cs-result').innerHTML=loadingHTML('Calculating using your state formulaâ€¦','small');
   const d=await api('/api/child-support',{
     case_id:CC.id,your_income:mine,their_income:theirs,
     children:kids,custody_split:val('cs-split'),your_expenses:val('cs-exp')
@@ -4266,13 +6233,13 @@ async function calcSupport(){
   const dir=d.direction==='you pay'?'<span style="color:var(--red)">You pay</span>':'<span style="color:var(--green)">You receive</span>';
   let html=`<div class="card cb">
     <div style="font-size:22px;font-weight:700;margin-bottom:4px">${dir} <span style="color:var(--gold)">$${(d.estimated_amount||0).toLocaleString()}/mo</span></div>
-    <div style="font-size:11px;color:var(--ink3);margin-bottom:12px">${esc(d.formula_used)} · ${esc(d.statute||'')}</div>
+    <div style="font-size:11px;color:var(--ink3);margin-bottom:12px">${esc(d.formula_used)} Â· ${esc(d.statute||'')}</div>
     <div class="st">How it was calculated</div>
     ${d.calculation_steps?.map(s=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid var(--border-light)">
       <div>${esc(s.step)}</div><div style="color:var(--gold);font-weight:500">${esc(s.value)}</div>
     </div>`).join('')||''}
     ${d.factors_that_could_change_this?.length?`<div style="margin-top:10px"><div class="st">Factors that could change this</div>
-      ${d.factors_that_could_change_this.map(f=>`<div style="font-size:11px;padding:3px 0">• ${esc(f)}</div>`).join('')}
+      ${d.factors_that_could_change_this.map(f=>`<div style="font-size:11px;padding:3px 0">â€¢ ${esc(f)}</div>`).join('')}
     </div>`:''}
     <div class="notice n-info" style="margin-top:10px;font-size:11px">${esc(d.disclaimer)}</div>
     <div style="margin-top:8px;font-size:11px;color:var(--ink2)">${esc(d.how_to_request||'')}</div>
@@ -4288,488 +6255,82 @@ function copyText(id){
 }
 
 init();
-
-// ── Constitutional rights map ─────────────────────────────────────────────────
-const CONST_RIGHTS = {
-  "Gatekeeping":["14th Amend. — Due Process","1st Amend. — Freedom of Association"],
-  "Parental Alienation":["14th Amend. — Due Process & Equal Protection"],
-  "Threats":["1st Amend. — True Threats","14th Amend. — Equal Protection"],
-  "Harassment":["4th Amend. — Privacy"],
-  "Privacy Violation":["4th Amend. — Search & Seizure"],
-  "Violation of Order":["14th Amend. — Due Process"],
-  "Financial Abuse":["14th Amend. — Property Rights"],
-  "Physical Abuse":["14th Amend. — Bodily Integrity","4th Amend. — Seizure of Person"],
-  "Coercive Control":["13th Amend. — Involuntary Servitude","14th Amend. — Liberty"],
-  "Relocation":["14th Amend. — Due Process","Full Faith & Credit — Art. IV"],
-  "False Allegations":["14th Amend. — Due Process","6th Amend. — Right to Confront"],
-  "Documentation / Evidence Tampering":["5th Amend. — Due Process"],
-  "Child Statement":["6th Amend. — Confrontation Clause"],
-  "Emotional Abuse":["14th Amend. — Substantive Due Process"],
-  "Neglect / Safety":["14th Amend. — Due Process (child welfare)"],
-  "Substance Concern":["14th Amend. — Due Process (child welfare)"],
-};
-function rightsTag(cat){
-  var r=CONST_RIGHTS[cat]||[];
-  if(!r.length) return '';
-  return '<div style="font-size:10px;color:#c9a84c;margin-top:3px;opacity:.9">⚖ '+r.join(' &middot; ')+'</div>';
-}
-
-function toggleSidebar(){
-  var sb=document.getElementById('sidebar');
-  var ov=document.getElementById('mob-overlay');
-  sb.classList.toggle('mob-open');
-  ov.classList.toggle('mob-open');
-}
-(function(){
-  var ov=document.createElement('div');ov.id='mob-overlay';
-  ov.onclick=function(){
-    document.getElementById('sidebar').classList.remove('mob-open');
-    ov.classList.remove('mob-open');
-  };
-  document.getElementById('app').appendChild(ov);
-  function checkMob(){var btn=document.getElementById('mob-btn');if(btn)btn.style.display=window.innerWidth<=680?'block':'none';}
-  checkMob();window.addEventListener('resize',checkMob);
-  var cl=document.getElementById('case-list');
-  if(cl)cl.addEventListener('click',function(){if(window.innerWidth<=680){document.getElementById('sidebar').classList.remove('mob-open');document.getElementById('mob-overlay').classList.remove('mob-open');}});
-})();
-
-// ── Download email capture ────────────────────────────────────────────────────
-async function submitDownload(){
-  const email = document.getElementById('dl-email').value.trim();
-  const btn   = document.getElementById('dl-btn');
-  const err   = document.getElementById('dl-err');
-  err.style.display = 'none';
-  if(!email || !email.includes('@')){
-    err.textContent = 'Please enter a valid email address.';
-    err.style.display = 'block'; return;
-  }
-  btn.textContent = 'Sending…'; btn.disabled = true;
-  try {
-    await api('/api/waitlist', {email, platform: 'desktop'});
-    document.getElementById('dl-form').style.display = 'none';
-    document.getElementById('dl-links').style.display = 'block';
-  } catch(e) {
-    err.textContent = 'Something went wrong. Try again.';
-    err.style.display = 'block';
-    btn.textContent = 'Get Free Download'; btn.disabled = false;
-  }
-}
 </script>
 </body>
 </html>"""
 
-
-# V2 HTTP HANDLER — adds new endpoints, preserves all v1 endpoints
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-
-    def send_json(self, data, status=200):
-        b = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(b))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(b)
-
-    def send_html(self, html):
-        b = html.encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html;charset=utf-8")
-        self.send_header("Content-Length", len(b))
-        self.end_headers()
-        self.wfile.write(b)
-
-    def body(self):
-        n = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(n)) if n else {}
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
-
-
-    def _handle_frontend(self, path):
-        if path == "/login":
-            self.send_html(LOGIN_HTML); return True
-        if path == "/logout":
-            token = _get_token(self)
-            if token:
-                conn = get_db()
-                conn.execute("DELETE FROM sessions WHERE token=?", (token,))
-                conn.commit(); conn.close()
-            self.send_response(302)
-            self.send_header("Location", "/login")
-            self.send_header("Set-Cookie", "sj_token=; Path=/; HttpOnly; Max-Age=0")
-            self.end_headers(); return True
-        if path in ("/", "/index.html"):
-            if LOCAL_MODE:
-                self.send_html(UI); return True
-            uid = get_user_from_token(_get_token(self))
-            if not uid:
-                self.send_response(302)
-                self.send_header("Location", "/login")
-                self.end_headers(); return True
-            self.send_html(UI); return True
-        return False
-
-    def do_GET(self):
-        p = urlparse(self.path)
-        path = p.path
-
-        if self._handle_frontend(path): return
-
-        if path == "/api/status":
-            self.send_json({
-                "ai": bool(API_KEY),
-                "version": VERSION,
-                "features": {
-                    "merkle_dag":       HAS_MERKLE,
-                    "semantic_patterns": HAS_SEMANTIC,
-                    "job_queue":        HAS_QUEUE,
-                    "readiness_engine": HAS_READINESS,
-                    "streaming_sdk":    HAS_ANTHROPIC_SDK,
-                }
-            })
-            return
-
-        # ── V2: DAG integrity verification ─────────────────────────────────
-        if re.match(r"^/api/cases/\d+/dag-verify$", path):
-            uid = require_auth(self)
-            if not uid: return
-            cid = int(path.split("/")[3])
-            if not HAS_MERKLE:
-                self.send_json({"error": "Merkle DAG module not available"}); return
-            conn = get_db()
-            result = verify_case_dag(conn, cid)
-            conn.close()
-            self.send_json(result); return
-
-        # ── V2: Exhibit Merkle proof ────────────────────────────────────────
-        if re.match(r"^/api/evidence/\d+/proof$", path):
-            uid = require_auth(self)
-            if not uid: return
-            eid = int(path.split("/")[3])
-            if not HAS_MERKLE:
-                self.send_json({"error": "Merkle DAG not available"}); return
-            conn = get_db()
-            proof = get_exhibit_proof(conn, eid)
-            conn.close()
-            self.send_json(proof); return
-
-        # ── V2: Document readiness scores ───────────────────────────────────
-        if re.match(r"^/api/cases/\d+/readiness$", path):
-            uid = require_auth(self)
-            if not uid: return
-            cid = int(path.split("/")[3])
-            if not HAS_READINESS:
-                self.send_json({"error": "Readiness engine not available"}); return
-            conn = get_db()
-            summary = get_readiness_summary(cid, conn)
-            conn.close()
-            self.send_json(summary); return
-
-        # ── V2: Job status ──────────────────────────────────────────────────
-        if re.match(r"^/api/jobs/[a-f0-9-]+$", path):
-            uid = require_auth(self)
-            if not uid: return
-            job_id = path.split("/")[3]
-            q = get_job_queue()
-            if not q:
-                self.send_json({"error": "Job queue not available"}); return
-            job = q.get_job(job_id)
-            self.send_json(job_status_response(job)); return
-
-        # ── V2: SSE stream for a job ────────────────────────────────────────
-        if re.match(r"^/api/jobs/[a-f0-9-]+/stream$", path):
-            uid = require_auth(self)
-            if not uid: return
-            job_id = path.split("/")[3]
-            q = get_job_queue()
-            if not q:
-                self.send_response(503); self.end_headers(); return
-
-            job = q.get_job(job_id)
-            if not job:
-                self.send_response(404); self.end_headers(); return
-
-            stream = job.subscribe()
-            self.send_response(200)
-            self.send_header("Content-Type",  "text/event-stream")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("X-Accel-Buffering", "no")
-            self.end_headers()
-
-            try:
-                for chunk in stream:
-                    self.wfile.write(chunk.encode("utf-8"))
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            return
-
-        # ── V2: Evidence gap analysis ───────────────────────────────────────
-        if re.match(r"^/api/cases/\d+/evidence-gaps$", path):
-            uid = require_auth(self)
-            if not uid: return
-            cid = int(path.split("/")[3])
-            conn = get_db()
-            case = conn.execute("SELECT case_type FROM cases WHERE id=?", (cid,)).fetchone()
-            ev   = conn.execute(
-                "SELECT DISTINCT category FROM evidence WHERE case_id=? AND confirmed=1",
-                (cid,)
-            ).fetchall()
-            conn.close()
-            cats = [r["category"] if hasattr(r,"__getitem__") else r[0] for r in ev]
-            ct   = (case["case_type"] if hasattr(case,"__getitem__") else case[0]) if case else ""
-            if not HAS_SEMANTIC:
-                self.send_json({"gaps": []}); return
-            gaps = detect_evidence_gaps(cats, ct)
-            self.send_json({"gaps": gaps, "confirmed_categories": cats}); return
-
-        # ── V2: Merkle proof statement (for redacted export) ────────────────
-        if re.match(r"^/api/cases/\d+/proof-statement$", path):
-            uid = require_auth(self)
-            if not uid: return
-            cid = int(path.split("/")[3])
-            qs  = parse_qs(p.query)
-            exhibit_ids_raw = qs.get("exhibit_ids", [""])[0]
-            exhibit_ids = [int(x) for x in exhibit_ids_raw.split(",") if x.strip().isdigit()]
-
-            if not HAS_MERKLE:
-                self.send_json({"statement": "Merkle DAG not available."}); return
-            conn = get_db()
-            stmt = generate_proof_statement(conn, cid, exhibit_ids)
-            conn.close()
-            self.send_json({"statement": stmt}); return
-
-        # ── Waitlist export (admin only — protect in production) ──────────────
-        if path == "/api/waitlist/export":
-            conn = get_db()
-            rows = conn.execute(
-                "SELECT email, platform, created_at FROM waitlist ORDER BY created_at DESC"
-            ).fetchall()
-            conn.close()
-            lines = ["email,platform,signed_up"] + [
-                f"{r['email'] if hasattr(r,'__getitem__') else r[0]},"
-                f"{r['platform'] if hasattr(r,'__getitem__') else r[1]},"
-                f"{r['created_at'] if hasattr(r,'__getitem__') else r[2]}"
-                for r in rows
-            ]
-            csv_bytes = "\n".join(lines).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/csv")
-            self.send_header("Content-Disposition", "attachment; filename=synjuris_waitlist.csv")
-            self.send_header("Content-Length", len(csv_bytes))
-            self.end_headers()
-            self.wfile.write(csv_bytes)
-            return
-
-        self.send_json({"error": "not found"}, 404)
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-        b    = self.body()
-
-        # ── Waitlist / download email capture ──────────────────────────────────
-        if path == "/api/waitlist":
-            email = (b.get("email") or "").strip().lower()
-            platform = (b.get("platform") or "desktop").strip()[:20]
-            if not email or "@" not in email:
-                self.send_json({"error": "Valid email required"}, 400); return
-            conn = get_db()
-            try:
-                conn.execute(
-                    "INSERT OR IGNORE INTO waitlist (email, platform) VALUES (?,?)",
-                    (email, platform)
-                )
-                conn.commit()
-            except Exception:
-                pass
-            conn.close()
-            self.send_json({"ok": True}); return
-
-        # ── Waitlist admin (view emails) ────────────────────────────────────────
-        if path == "/api/waitlist" and False:  # GET handled below
-            pass
-
-                # ── V2: Evidence confirmation — adds to Merkle DAG ──────────────────
-        if path == "/api/evidence/confirm":
-            uid = require_auth(self)
-            if not uid: return
-            eid = b.get("id")
-            conn = get_db()
-            ev = conn.execute(
-                "SELECT case_id FROM evidence WHERE id=?", (eid,)
-            ).fetchone()
-            if not ev:
-                conn.close()
-                self.send_json({"error": "not found"}, 404); return
-
-            cid = ev["case_id"] if hasattr(ev, "__getitem__") else ev[0]
-
-            if HAS_MERKLE:
-                result = confirm_evidence_v2(conn, eid, cid)
-            else:
-                en = assign_exhibit_number(conn, cid)
-                conn.execute("UPDATE evidence SET confirmed=1, exhibit_number=? WHERE id=?", (en, eid))
-                conn.commit()
-                result = {"exhibit_number": en, "ok": True}
-
-            # Trigger speculative pre-generation (non-blocking)
-            q = get_job_queue()
-            if q and HAS_QUEUE:
-                threading.Thread(
-                    target=q.trigger_speculative, args=(cid, conn), daemon=True
-                ).start()
-
-            conn.close()
-            self.send_json(result)
-            return
-
-        # ── V2: Async document generation ──────────────────────────────────
-        if path == "/api/generate-doc-async":
-            uid = require_auth(self)
-            if not uid: return
-            cid      = b.get("case_id")
-            dtype    = b.get("doc_type")
-            instr    = b.get("instructions", "")
-            force    = b.get("force", False)
-
-            q = get_job_queue()
-            if not q:
-                # Fallback to synchronous generation
-                self.send_json({"error": "Job queue not available — use /api/generate-doc"}); return
-
-            conn    = get_db()
-            job_id  = q.submit("document", cid, dtype, conn, instr, force=force)
-            conn.close()
-            self.send_json({
-                "job_id":     job_id,
-                "stream_url": f"/api/jobs/{job_id}/stream",
-                "status_url": f"/api/jobs/{job_id}",
-            })
-            return
-
-        # ── V2: Async hearing prep ──────────────────────────────────────────
-        if path == "/api/hearing-prep-async":
-            uid = require_auth(self)
-            if not uid: return
-            cid = b.get("case_id")
-            q   = get_job_queue()
-            if not q:
-                self.send_json({"error": "Job queue not available"}); return
-            conn   = get_db()
-            job_id = q.submit("hearing_prep", cid, "Hearing Prep Guide", conn)
-            conn.close()
-            self.send_json({
-                "job_id":     job_id,
-                "stream_url": f"/api/jobs/{job_id}/stream",
-                "status_url": f"/api/jobs/{job_id}",
-            })
-            return
-
-        # ── V2: Async motion generation ─────────────────────────────────────
-        if path == "/api/motion-async":
-            uid = require_auth(self)
-            if not uid: return
-            cid   = b.get("case_id")
-            mtype = b.get("motion_type", "Motion for Contempt")
-            q     = get_job_queue()
-            if not q:
-                self.send_json({"error": "Job queue not available"}); return
-            conn   = get_db()
-            job_id = q.submit("motion", cid, mtype, conn, b.get("instructions", ""))
-            conn.close()
-            self.send_json({
-                "job_id":     job_id,
-                "stream_url": f"/api/jobs/{job_id}/stream",
-                "status_url": f"/api/jobs/{job_id}",
-            })
-            return
-
-        # ── V2: DAG re-build (admin: add all existing confirmed exhibits) ───
-        if path == "/api/cases/dag-rebuild":
-            uid = require_auth(self)
-            if not uid: return
-            cid = b.get("case_id")
-            if not HAS_MERKLE:
-                self.send_json({"error": "Merkle module not available"}); return
-            conn = get_db()
-            ev_rows = conn.execute(
-                "SELECT * FROM evidence WHERE case_id=? AND confirmed=1 "
-                "AND (is_deleted IS NULL OR is_deleted=0) ORDER BY id ASC",
-                (cid,)
-            ).fetchall()
-            added = 0
-            for row in ev_rows:
-                ev_dict = dict(row) if hasattr(row, "keys") else {
-                    "id": row[0], "case_id": row[1], "exhibit_number": row[2],
-                    "content": row[3], "source": row[4], "event_date": row[5],
-                    "category": row[6], "confirmed": row[7],
-                }
-                try:
-                    add_exhibit_to_dag(conn, cid, ev_dict)
-                    added += 1
-                except Exception as e:
-                    print(f"  DAG rebuild error for exhibit {ev_dict.get('id')}: {e}")
-            conn.close()
-            self.send_json({"ok": True, "exhibits_added": added, "case_id": cid})
-            return
-
-        self.send_json({"error": "not found"}, 404)
-
-
-# ── Startup ────────────────────────────────────────────────────────────────────
-
-def check_for_update():
-    try:
-        req = urllib.request.Request(UPDATE_URL,
-                                     headers={"User-Agent": f"SynJuris/{VERSION}"})
-        with urllib.request.urlopen(req, timeout=4) as r:
-            data = json.loads(r.read())
-        latest = data.get("version", "")
-        notes  = data.get("notes", "")
-        if latest and latest != VERSION:
-            print(f"\n  ┌─ Update available: v{latest} (you have v{VERSION})")
-            if notes: print(f"  │  {notes}")
-            print(f"  └─ Download: https://github.com/synjuris/synjuris/releases/latest\n")
-    except Exception:
-        pass
-
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# STARTUP
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def open_browser():
-    time.sleep(1)
-    webbrowser.open(f"http://localhost:{PORT}")
-
+    import time; time.sleep(1)
+    webbrowser.open("http://localhost:5000")
 
 if __name__ == "__main__":
     init_db()
-
-    print("\n" + "═" * 58)
-    print(f"  SynJuris v{VERSION} — Advanced Architecture")
-    print("═" * 58)
-    print(f"  Database  : {DB_PATH}")
-    print(f"  AI        : {'✓ Enabled' if API_KEY else '✗ No key set (optional)'}")
-    print(f"  Streaming : {'✓ Anthropic SDK' if HAS_ANTHROPIC_SDK else '⚠ Simulated (pip install anthropic)'}")
-    print(f"  Merkle DAG: {'✓ Active' if HAS_MERKLE else '⚠ Disabled (merkle_dag.py missing)'}")
-    print(f"  Semantic  : {'✓ Active' if HAS_SEMANTIC else '⚠ Regex fallback (pattern_engine.py missing)'}")
-    print(f"  Job Queue : {'✓ Active' if HAS_QUEUE else '⚠ Synchronous fallback'}")
-    print(f"  Readiness : {'✓ Active' if HAS_READINESS else '⚠ Disabled'}")
-    print(f"  Auth      : {'⚠ LOCAL (no login)' if LOCAL_MODE else '✓ Login required'}")
-    print(f"\n  Listening  : http://localhost:{PORT}")
-    print("  Press Ctrl+C to stop.\n")
-
+    print("\n" + "â•"*54)
+    print(f"  SynJuris v{VERSION} â€” Legal Intelligence Platform")
+    print("â•"*54)
+    print(f"  Database : {DB_PATH}")
+    print(f"  AI (Claude): {'âœ“ Enabled' if API_KEY else 'âœ— No key set (optional)'}")
+    if not API_KEY:
+        print("\n  To enable AI features:")
+        print("    Mac/Linux : export ANTHROPIC_API_KEY=your-key")
+        print("    Windows   : set ANTHROPIC_API_KEY=your-key")
+        print("    Then restart SynJuris.")
+    print(f"\n  Listening on http://localhost:{PORT}  (localhost only)")
+    print("  Multi-threaded: AI calls will not freeze the UI.")
+    # Non-blocking update check â€” runs in background, never delays startup
     threading.Thread(target=check_for_update, daemon=True).start()
     if PORT == 5000:
         threading.Thread(target=open_browser, daemon=True).start()
-
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n  SynJuris stopped.")
+
+
+# ===================== V2 MERGE START =====================
+# Added merge scaffolding for v2 features while preserving v1 behavior.
+# These imports are optional and degrade gracefully if the modules are missing.
+try:
+    from merkle_dag import init_merkle_schema, add_exhibit_to_dag, verify_case_dag, get_exhibit_proof, generate_proof_statement, GENESIS_HASH
+    HAS_MERKLE = True
+except Exception:
+    HAS_MERKLE = False
+
+try:
+    from pattern_engine import scan_patterns as _semantic_scan, detect_evidence_gaps, init_embedding_schema
+    HAS_SEMANTIC = True
+except Exception:
+    HAS_SEMANTIC = False
+
+try:
+    from job_queue import JobQueue, job_status_response, compute_evidence_hash
+    HAS_QUEUE = True
+except Exception:
+    HAS_QUEUE = False
+
+try:
+    from readiness_engine import compute_readiness_scores, get_readiness_summary
+    HAS_READINESS = True
+except Exception:
+    HAS_READINESS = False
+
+# V2 compatibility helpers
+if HAS_SEMANTIC:
+    def scan_patterns(text: str):
+        return _semantic_scan(text, use_semantic=True)
+
+# Expose v2 endpoints only if the base handler supports route dispatching by path.
+# These are placeholders for the in-file merge and should be wired into the handler
+# methods in the next edit pass.
+V2_ENDPOINTS = [
+    '/api/cases/:id/dag-verify',
+    '/api/jobs/:id',
+    '/api/jobs/:id/stream',
+    '/api/cases/:id/readiness',
+]
+# ====================== V2 MERGE END ======================
