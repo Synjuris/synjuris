@@ -1,7 +1,7 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SynJuris v2 — Mac/Linux Launcher
-#  Checks for optional v2 dependencies and installs them if you want them.
+#  Double-click to start. Right-click → Open on first run if macOS blocks it.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 cd "$(dirname "$0")"
@@ -9,8 +9,8 @@ cd "$(dirname "$0")"
 clear
 echo ""
 echo "  ╔═══════════════════════════════════════════════════════╗"
-echo "  ║           SynJuris v2 — Advanced Architecture         ║"
-echo "  ║     Merkle DAG · Semantic AI · Streaming · Local      ║"
+echo "  ║           SynJuris v2 — Legal Intelligence             ║"
+echo "  ║     Local-First · AI-Assisted · Your Data Stays Yours  ║"
 echo "  ╚═══════════════════════════════════════════════════════╝"
 echo ""
 
@@ -29,34 +29,34 @@ for cmd in python3 python3.12 python3.11 python3.10 python3.9; do
 done
 
 if [ -z "$PYTHON" ]; then
-    echo "  ✗  Python 3.9 or later required. Install from python.org"
+    echo "  ✗  Python 3.9 or later required."
+    echo "     Download from: https://www.python.org/downloads/"
+    echo ""
     read -r; exit 1
 fi
 echo "  ✓  Python: $($PYTHON --version)"
 
-# ── 2. Check synjuris-20.py ──────────────────────────────────────────────────
-if [ ! -f "synjuris-20.py" ]; then
-    # Try falling back to synjuris-10.py
-    if [ -f "synjuris-10.py" ]; then
-        echo "  ⚠  synjuris-20.py not found — launching synjuris-10.py (v1)"
-        SCRIPT="synjuris-10.py"
-    else
-        echo "  ✗  No SynJuris script found in this folder."
-        read -r; exit 1
-    fi
-else
-    SCRIPT="synjuris-20.py"
-    echo "  ✓  $SCRIPT found"
+# ── 2. Check synjuris.py ─────────────────────────────────────────────────────
+if [ ! -f "synjuris.py" ]; then
+    echo "  ✗  synjuris.py not found in this folder."
+    echo "     Make sure this launcher is in the same folder as synjuris.py"
+    echo ""
+    read -r; exit 1
 fi
+echo "  ✓  synjuris.py found"
 
 # ── 3. API key ────────────────────────────────────────────────────────────────
 if [ -z "$ANTHROPIC_API_KEY" ]; then
     echo ""
     echo "  ─────────────────────────────────────────────────────────"
-    echo "  AI features require an Anthropic API key."
-    echo "  Get a free key at: https://console.anthropic.com"
+    echo "  AI features require an API key."
     echo ""
-    echo "  Paste your key here (or Enter to skip):"
+    echo "  Anthropic (default): https://console.anthropic.com"
+    echo "  OpenAI:              https://platform.openai.com/api-keys"
+    echo "  Ollama (local/free): https://ollama.com — no key needed"
+    echo ""
+    echo "  Paste your Anthropic or OpenAI key here, or press Enter to skip."
+    echo "  (To use Ollama, just press Enter — configure it inside the app)"
     echo "  ─────────────────────────────────────────────────────────"
     printf "  API key: "
     read -r USER_KEY
@@ -64,42 +64,35 @@ if [ -z "$ANTHROPIC_API_KEY" ]; then
         export ANTHROPIC_API_KEY="$USER_KEY"
         echo "  ✓  API key set for this session."
     else
-        echo "  Continuing without API key — AI features disabled."
+        echo "  Continuing without API key — AI features disabled until configured."
     fi
 else
     echo "  ✓  API key: set (from environment)"
 fi
 
-# ── 4. Optional v2 enhancements ──────────────────────────────────────────────
+# ── 4. Optional enhancements ──────────────────────────────────────────────────
 echo ""
 echo "  ─────────────────────────────────────────────────────────"
-echo "  SynJuris v2 has optional enhancements:"
+echo "  Optional enhancements (all non-critical — app works without them):"
 echo ""
-echo "  • Streaming generation (real-time text as it's written)"
-echo "    → pip install anthropic"
+echo "  • True streaming AI responses  → pip install anthropic"
+echo "  • Semantic pattern detection   → pip install sentence-transformers"
+echo "  • Advanced negation detection  → pip install spacy"
 echo ""
-echo "  • Semantic pattern detection (catches paraphrased violations)"
-echo "    → pip install sentence-transformers"
-echo ""
-echo "  • Advanced negation detection"
-echo "    → pip install spacy && python -m spacy download en_core_web_sm"
-echo ""
-echo "  Install optional enhancements now? (y/N)"
-echo "  ─────────────────────────────────────────────────────────"
-printf "  Install? [y/N]: "
+printf "  Install optional enhancements now? [y/N]: "
 read -r INSTALL_CHOICE
 
 if [[ "$INSTALL_CHOICE" =~ ^[Yy]$ ]]; then
     echo ""
-    echo "  Installing Anthropic SDK (streaming)..."
+    echo "  Installing..."
+
     if $PYTHON -m pip install anthropic --quiet --break-system-packages 2>/dev/null || \
        $PYTHON -m pip install anthropic --quiet 2>/dev/null; then
-        echo "  ✓  anthropic"
+        echo "  ✓  anthropic SDK"
     else
-        echo "  ⚠  anthropic install failed (optional)"
+        echo "  ⚠  anthropic install failed (optional — app still works)"
     fi
 
-    echo "  Installing sentence-transformers (semantic patterns)..."
     if $PYTHON -m pip install sentence-transformers --quiet --break-system-packages 2>/dev/null || \
        $PYTHON -m pip install sentence-transformers --quiet 2>/dev/null; then
         echo "  ✓  sentence-transformers"
@@ -107,20 +100,19 @@ if [[ "$INSTALL_CHOICE" =~ ^[Yy]$ ]]; then
         echo "  ⚠  sentence-transformers install failed (optional)"
     fi
 
-    echo "  Installing spaCy (negation detection)..."
     if { $PYTHON -m pip install spacy --quiet --break-system-packages 2>/dev/null || \
          $PYTHON -m pip install spacy --quiet 2>/dev/null; } && \
        $PYTHON -m spacy download en_core_web_sm --quiet 2>/dev/null; then
-        echo "  ✓  spacy en_core_web_sm"
+        echo "  ✓  spacy"
     else
         echo "  ⚠  spacy install failed (optional)"
     fi
 
     echo ""
-    echo "  ✓  Enhancement installation complete (failures above are non-critical)"
+    echo "  ✓  Done. Any failures above are non-critical."
 else
     echo ""
-    echo "  Skipping — SynJuris runs fully without these (falls back to v1 behavior)"
+    echo "  Skipping — SynJuris works fully without these."
 fi
 
 # ── 5. Launch ─────────────────────────────────────────────────────────────────
@@ -131,7 +123,7 @@ echo "  Press Ctrl+C to stop."
 echo "  ═══════════════════════════════════════════════════════"
 echo ""
 
-$PYTHON "$SCRIPT"
+$PYTHON synjuris.py
 
 echo ""
 echo "  SynJuris stopped. Press Enter to close."
