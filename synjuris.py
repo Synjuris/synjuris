@@ -745,7 +745,11 @@ def init_db():
             pass
 
     # V2 job persistence table
-    conn.executescript("""
+  with conn.cursor() as cur:
+    for statement in schema_sql.split(';'):
+        if statement.strip():
+            cur.execute(statement)
+    conn.commit()
     CREATE TABLE IF NOT EXISTS generation_jobs (
         job_id TEXT PRIMARY KEY,
         case_id INTEGER,
