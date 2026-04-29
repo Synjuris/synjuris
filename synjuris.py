@@ -1,14 +1,3 @@
-
-python
-
-"""
-SynJuris — Production Intelligence Engine
-[SYSTEM ARCHITECTURE]
-1. Core Intelligence: LegalEngine (Structure over Chat)
-2. Web Framework: Handler (Legacy Logic Bridge)
-3. Cloud Bridge: Flask/WSGI (Production Connector)
-"""
-
 import sqlite3, json, os, re, xml.etree.ElementTree as ET
 import webbrowser, threading, urllib.request, urllib.parse
 import hashlib, hmac, time, queue, uuid, math
@@ -19,16 +8,26 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from typing import Optional, Callable
 
-# THE CRITICAL LINE FOR RENDER:
-try:
-    from flask import Flask, make_response, request as flask_req, jsonify
-except ImportError:
-    Flask = None
+VERSION     = "2.0.0"
+PORT        = int(os.environ.get("PORT", 5000))
+DB_PATH     = os.environ.get("SYNJURIS_DB", "synjuris.db")
+UPLOADS_DIR = os.environ.get("SYNJURIS_UPLOADS", "uploads")
+API_KEY     = os.environ.get("ANTHROPIC_API_KEY", "")
+LOCAL_MODE  = os.environ.get("SYNJURIS_LOCAL", "1") == "1"
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GLOBAL CONSTANTS
-# ══════════════════════════════════════════════════════════════════════════════
-# FIX 1: These were missing entirely — app would NameError on first use
+class Handler(BaseHTTPRequestHandler):
+    """The main server logic bridge."""
+    protocol_version = "HTTP/1.1"
+    def body(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        return json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
+    
+    def do_GET(self):
+        # Health check for Render
+        if self.path == "/health":
+            self.send_response(200); self.end_headers()
+            self.wfile.write(b"OK")
+            return
 VERSION     = "2.0.0"
 PORT        = int(os.environ.get("PORT", 5000))
 DB_PATH     = os.environ.get("SYNJURIS_DB", "synjuris.db")
