@@ -8204,26 +8204,38 @@ def app(environ, start_response):
             pass
 
     # 2. Initialize your existing handler without starting a real network server
-    # This uses your actual 'SynJurisHandler' class defined earlier in your file
     handler = SynJurisHandler(MockRequest(), ("0.0.0.0", 0), None)
     
-    # 3. Setup the environment so 'self.path' and 'self.wfile' work in your code
+    # 3. Setup the environment so 'self.path', 'self.wfile', and headers work
     output_buffer = BytesIO()
     handler.wfile = output_buffer
     handler.rfile = BytesIO()
+    
+    # These attributes are required by standard BaseHTTPRequestHandler logic
+    handler.request_version = "HTTP/1.1"
+    handler.protocol_version = "HTTP/1.1"
     handler.requestline = f"GET {environ.get('PATH_INFO', '/')} HTTP/1.1"
     handler.command = "GET"
     handler.path = environ.get('PATH_INFO', '/')
     
+    # Populate headers (useful if your code checks User-Agent, etc.)
+    from http.client import HTTPMessage
+    handler.headers = HTTPMessage()
+    for key, val in environ.items():
+        if key.startswith('HTTP_'):
+            handler.headers.add_header(key[5:].replace('_', '-'), val)
+
     # 4. EXECUTE YOUR ACTUAL do_GET LOGIC
     try:
         handler.do_GET()
     except Exception as e:
+        # If it fails, we want to see the error message in the browser
         start_response('500 Internal Error', [('Content-Type', 'text/plain')])
         return [f"Logic Error: {str(e)}".encode()]
 
     # 5. Extract what your code wrote to 'self.wfile' and send it to Render
     status = '200 OK'
+    # We use utf-8 to ensure all legal symbols render correctly
     headers = [('Content-type', 'text/html; charset=utf-8')]
     start_response(status, headers)
     return [output_buffer.getvalue()]
