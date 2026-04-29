@@ -8229,25 +8229,34 @@ def app(environ, start_response):
     try:
         handler.do_GET()
     except Exception as e:
-        # If it fails, we want to see the error message in the browser
         start_response('500 Internal Error', [('Content-Type', 'text/plain')])
         return [f"Logic Error: {str(e)}".encode()]
 
-    # 5. DATA EXTRACTION
-    # We grab everything your code wrote. 
+    # 5. HEADER HANDLING
+    # We grab everything your code wrote to the buffer.
     full_content = output_buffer.getvalue()
     
-    # Check if the handler actually produced anything
-    if not full_content:
-        start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
-        return [b"<h1>SynJuris</h1><p>The handler returned no content. Please check your do_GET logic.</p>"]
+    # Check if the handler wrote its own HTTP/1.1 headers (the cause of the text clutter)
+    if full_content.startswith(b"HTTP/1."):
+        # If headers are present, we split at the first blank line (\r\n\r\n or \n\n)
+        if b'\r\n\r\n' in full_content:
+            _, body = full_content.split(b'\r\n\r\n', 1)
+        elif b'\n\n' in full_content:
+            _, body = full_content.split(b'\n\n', 1)
+        else:
+            body = full_content
+    else:
+        body = full_content
 
-    # If your handler wrote raw HTTP headers, we just send it as is. 
-    # Modern browsers are usually smart enough to handle a duplicate 200 OK line.
+    # If the body is still empty, provide a fallback
+    if not body.strip():
+        body = b"<h1>SynJuris</h1><p>Environment active, but no content was generated.</p>"
+
+    # Send a clean response to the browser
     status = '200 OK'
-    headers = [('Content-type', 'text/html; charset=utf-8')]
-    start_response(status, headers)
-    return [full_content]
+    response_headers = [('Content-type', 'text/html; charset=utf-8')]
+    start_response(status, response_headers)
+    return [body]
 
 if __name__ == "__main__":
     # This remains so your local 'python3 synjuris.py' still works exactly the same
