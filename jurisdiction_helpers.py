@@ -1,8 +1,9 @@
 """
 jurisdiction_helpers.py — SynJuris v2
-Extracted jurisdiction statute resolution for use across modules.
+Centralized jurisdiction statute resolution and alias mapping.
 """
 
+# Mapping of states to primary custody, support, and DV statutes
 JURISDICTION_LAW = {
     "Alabama":        {"custody": "Ala. Code § 30-3-1", "support": "Ala. Code § 30-3-110", "dv": "Ala. Code § 30-5-1"},
     "Alaska":         {"custody": "Alaska Stat. § 25.20.060", "support": "Alaska Stat. § 25.27.020", "dv": "Alaska Stat. § 18.66.100"},
@@ -74,8 +75,8 @@ JURISDICTION_ALIASES = {
     "minn":"Minnesota","penn":"Pennsylvania","wisc":"Wisconsin",
 }
 
-
 def resolve_jurisdiction(raw):
+    """Clean up user input and return canonical state name and statutes."""
     if not raw:
         return None, {}
     key = raw.strip().lower()
@@ -89,8 +90,8 @@ def resolve_jurisdiction(raw):
             return k, JURISDICTION_LAW[k]
     return raw.title(), {}
 
-
 def jurisdiction_statute_block(jurisdiction):
+    """Generate a text block for inclusion in AI prompts or document headers."""
     name, statutes = resolve_jurisdiction(jurisdiction)
     if not statutes:
         return (f"Jurisdiction: {name}\n"
