@@ -1,0 +1,7 @@
+# SynJuris — Python dependencies
+#
+# Core server runs on Python stdlib only — no install needed.
+#
+# Optional: enables Merkle DAG proof PDF export
+# Install with: pip install reportlab
+reportlab>=4.0.0

@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SynJuris — Legal Case Organizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════
+   SYNJURIS DESIGN SYSTEM v2
+   UPL CONSTRAINT: All copy frames SynJuris as an organization
+   and preparation tool. Never as legal advisor or counsel.
+   Disclaimer is persistent across all authenticated screens.
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Surface */
+  --ink:          #0a1520;
+  --ink-mid:      #0f1e2e;
+  --ink-light:    #162840;
+  --surface:      #111d2b;
+  --surface-hi:   #162436;
+
+  /* Borders */
+  --border:       rgba(255,255,255,0.07);
+  --border-hi:    rgba(201,168,76,0.35);
+
+  /* Brand */
+  --gold:         #c9a84c;
+  --gold-light:   #e2c16e;
+  --gold-dim:     rgba(201,168,76,0.12);
+
+  /* Text */
+  --text:         #e8dfc8;
+  --text-mid:     #a0b0c0;
+  --text-dim:     #506070;
+
+  /* Semantic */
+  --green:        #4caf82;
+  --red:          #e05555;
+  --amber:        #d4924a;
+
+  /* Structure */
+  --radius:       8px;
+  --radius-lg:    12px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-weight: 300;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1fr 460px;
+}
+
+/* ── Brand panel ───────────────────────────────────────────── */
+.brand {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 80px;
+  overflow: hidden;
+}
+
+.brand-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 55% 70% at 15% 50%,
+      rgba(201,168,76,0.055) 0%, transparent 65%),
+    radial-gradient(ellipse 35% 50% at 85% 15%,
+      rgba(201,168,76,0.025) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+.brand-grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.013) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.013) 1px, transparent 1px);
+  background-size: 52px 52px;
+  mask-image: radial-gradient(ellipse 70% 80% at 25% 50%,
+    black 20%, transparent 75%);
+  pointer-events: none;
+}
+
+/* Vertical rule separating panels */
+.brand::after {
+  content: '';
+  position: absolute;
+  right: 0; top: 0; bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom,
+    transparent,
+    var(--border) 20%,
+    rgba(201,168,76,0.18) 50%,
+    var(--border) 80%,
+    transparent
+  );
+}
+
+.brand-content {
+  position: relative;
+  z-index: 1;
+  max-width: 500px;
+}
+
+/* Staggered entrance */
+.brand-content > * {
+  opacity: 0;
+  transform: translateY(14px);
+  animation: rise 0.55s ease forwards;
+}
+.wordmark    { animation-delay: 0.08s; }
+.headline    { animation-delay: 0.18s; }
+.tagline     { animation-delay: 0.28s; }
+.pillars     { animation-delay: 0.38s; }
+.upl-notice  { animation-delay: 0.48s; }
+
+@keyframes rise {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.wordmark {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.38em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 44px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.wordmark::before {
+  content: '';
+  width: 28px; height: 1px;
+  background: var(--gold);
+  opacity: 0.5;
+  display: block;
+}
+
+.headline {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: clamp(38px, 4.5vw, 58px);
+  font-weight: 300;
+  line-height: 1.12;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  margin-bottom: 22px;
+}
+.headline em {
+  font-style: italic;
+  color: var(--gold-light);
+}
+
+.tagline {
+  font-size: 15px;
+  font-weight: 300;
+  color: var(--text-mid);
+  line-height: 1.75;
+  margin-bottom: 48px;
+  max-width: 400px;
+}
+
+/* Feature pillars */
+.pillars {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: rgba(255,255,255,0.018);
+  margin-bottom: 24px;
+}
+
+.pillar {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.18s;
+}
+.pillar:last-child { border-bottom: none; }
+.pillar:hover { background: rgba(201,168,76,0.035); }
+
+.pillar-icon {
+  width: 30px; height: 30px;
+  border-radius: 6px;
+  background: var(--gold-dim);
+  border: 1px solid rgba(201,168,76,0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.pillar-icon svg {
+  width: 14px; height: 14px;
+  stroke: var(--gold);
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pillar-text strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 3px;
+  letter-spacing: 0.01em;
+}
+.pillar-text span {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+
+/* UPL notice — persistent, visible, not buried */
+.upl-notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: rgba(212,146,74,0.07);
+  border: 1px solid rgba(212,146,74,0.2);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
+.upl-notice svg {
+  width: 14px; height: 14px;
+  stroke: var(--amber);
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.upl-notice p {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+.upl-notice strong {
+  color: var(--amber);
+  font-weight: 500;
+}
+
+/* Version tag */
+.version {
+  position: absolute;
+  bottom: 36px; left: 80px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  letter-spacing: 0.1em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.version-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+/* ── Auth panel ────────────────────────────────────────────── */
+.auth {
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 60px 48px;
+  box-shadow: -28px 0 72px rgba(0,0,0,0.28);
+  opacity: 0;
+  animation: fadeIn 0.45s ease 0.15s forwards;
+}
+@keyframes fadeIn { to { opacity: 1; } }
+
+.auth-head { margin-bottom: 36px; }
+
+.auth-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 26px;
+  font-weight: 400;
+  color: var(--text);
+  margin-bottom: 5px;
+}
+.auth-sub {
+  font-size: 13px;
+  color: var(--text-dim);
+  font-weight: 300;
+}
+
+/* Fields */
+.field { margin-bottom: 18px; }
+
+.field-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 7px;
+}
+
+.field-input {
+  width: 100%;
+  background: var(--ink-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 11px 14px;
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 14px;
+  font-weight: 300;
+  outline: none;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  -webkit-appearance: none;
+}
+.field-input::placeholder { color: var(--text-dim); opacity: 0.5; }
+.field-input:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(201,168,76,0.09);
+}
+
+/* Submit */
+.btn {
+  width: 100%;
+  border: none;
+  border-radius: var(--radius);
+  padding: 12px 20px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.18s, box-shadow 0.18s, transform 0.1s;
+  margin-top: 6px;
+  position: relative;
+  overflow: hidden;
+}
+.btn-gold {
+  background: var(--gold);
+  color: var(--ink);
+}
+.btn-gold:hover {
+  background: var(--gold-light);
+  box-shadow: 0 4px 18px rgba(201,168,76,0.28);
+}
+.btn-gold:active { transform: translateY(1px); }
+.btn.loading { color: transparent; pointer-events: none; }
+.btn.loading::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 15px; height: 15px;
+  margin: -7.5px 0 0 -7.5px;
+  border: 2px solid var(--ink);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.65s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Toggle */
+.auth-toggle {
+  text-align: center;
+  margin-top: 20px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.auth-toggle a {
+  color: var(--gold);
+  cursor: pointer;
+  font-weight: 400;
+  text-decoration: none;
+  transition: color 0.18s;
+}
+.auth-toggle a:hover { color: var(--gold-light); }
+
+/* Error */
+.form-err {
+  background: rgba(224,85,85,0.09);
+  border: 1px solid rgba(224,85,85,0.25);
+  border-radius: var(--radius);
+  padding: 10px 13px;
+  font-size: 12.5px;
+  color: #f09090;
+  margin-bottom: 18px;
+  display: none;
+  line-height: 1.5;
+}
+
+/* Auth-panel UPL footer */
+.auth-footer {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.auth-footer svg {
+  width: 12px; height: 12px;
+  stroke: var(--text-dim);
+  fill: none;
+  stroke-width: 1.5;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.auth-footer p {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+/* Form view switching */
+.view { display: none; }
+.view.active { display: block; }
+
+/* ── Responsive ────────────────────────────────────────────── */
+@media (max-width: 860px) {
+  body {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+  .brand {
+    padding: 48px 28px 36px;
+  }
+  .brand::after { display: none; }
+  .version { position: static; margin-top: 36px; }
+  .auth {
+    padding: 44px 28px 56px;
+    box-shadow: none;
+    border-top: 1px solid var(--border);
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ Brand Panel ══════════════════════════════════════════════════════════ -->
+<section class="brand" aria-label="Product overview">
+  <div class="brand-bg"></div>
+  <div class="brand-grid"></div>
+
+  <div class="brand-content">
+
+    <div class="wordmark">SynJuris</div>
+
+    <h1 class="headline">
+      Organize your case.<br>
+      Prepare like you have<br>
+      <em>professional help.</em>
+    </h1>
+
+    <p class="tagline">
+      SynJuris helps you build your case file, understand relevant
+      legal patterns, and prepare documents — so you walk into
+      court or a lawyer's office ready.
+    </p>
+
+    <div class="pillars">
+
+      <div class="pillar">
+        <div class="pillar-icon">
+          <svg viewBox="0 0 24 24">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="9" y1="13" x2="15" y2="13"/>
+            <line x1="9" y1="17" x2="12" y2="17"/>
+          </svg>
+        </div>
+        <div class="pillar-text">
+          <strong>Structured Evidence Organization</strong>
+          <span>Log, categorize, and confirm exhibits with auto-assigned numbers and tamper-evident cryptographic sealing.</span>
+        </div>
+      </div>
+
+      <div class="pillar">
+        <div class="pillar-icon">
+          <svg viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </div>
+        <div class="pillar-text">
+          <strong>Pattern Recognition for Research</strong>
+          <span>Flags potentially relevant legal categories and related constitutional provisions — as a research starting point, not legal advice.</span>
+        </div>
+      </div>
+
+      <div class="pillar">
+        <div class="pillar-icon">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
+        <div class="pillar-text">
+          <strong>Cryptographic Evidence Chain</strong>
+          <span>Each confirmed exhibit is sealed into a Merkle DAG. Generates a verifiable proof record showing your evidence was not altered post-entry.</span>
+        </div>
+      </div>
+
+      <div class="pillar">
+        <div class="pillar-icon">
+          <svg viewBox="0 0 24 24">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <path d="M9 9h6M9 12h6M9 15h4"/>
+          </svg>
+        </div>
+        <div class="pillar-text">
+          <strong>AI-Assisted Document Drafting</strong>
+          <span>Generates draft documents from your organized evidence. All drafts require your review and attorney verification before filing.</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- UPL persistent notice — visible on every entry point -->
+    <div class="upl-notice" role="note" aria-label="Legal disclaimer">
+      <svg viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="12" y1="8" x2="12" y2="12"/>
+        <line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <p>
+        <strong>Not legal advice.</strong>
+        SynJuris is an organizational and drafting tool, not a law firm.
+        Nothing here constitutes legal advice. Consult a licensed attorney
+        before filing any document or making legal decisions.
+      </p>
+    </div>
+
+  </div>
+
+  <div class="version">
+    <span class="version-dot"></span>
+    v2.0.0 · LOCAL MODE · Data stored on this device only
+  </div>
+</section>
+
+
+<!-- ══ Auth Panel ═══════════════════════════════════════════════════════════ -->
+<section class="auth" aria-label="Sign in">
+
+  <div class="auth-head">
+    <h2 class="auth-title" id="auth-title">Welcome back</h2>
+    <p class="auth-sub" id="auth-sub">Sign in to access your case files</p>
+  </div>
+
+  <div class="form-err" id="form-err" role="alert"></div>
+
+  <!-- ── Login ── -->
+  <div class="view active" id="view-login">
+    <div class="field">
+      <label class="field-label" for="l-email">Email address</label>
+      <input class="field-input" type="email" id="l-email"
+             placeholder="you@example.com" autocomplete="email">
+    </div>
+    <div class="field">
+      <label class="field-label" for="l-pw">Password</label>
+      <input class="field-input" type="password" id="l-pw"
+             placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <button class="btn btn-gold" id="btn-login" onclick="doLogin()">
+      Sign In
+    </button>
+    <div class="auth-toggle">
+      No account? <a onclick="showSignup()">Create one free</a>
+    </div>
+  </div>
+
+  <!-- ── Signup ── -->
+  <div class="view" id="view-signup">
+    <div class="field">
+      <label class="field-label" for="s-email">Email address</label>
+      <input class="field-input" type="email" id="s-email"
+             placeholder="you@example.com" autocomplete="email">
+    </div>
+    <div class="field">
+      <label class="field-label" for="s-pw">Password</label>
+      <input class="field-input" type="password" id="s-pw"
+             placeholder="At least 8 characters" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label class="field-label" for="s-pw2">Confirm password</label>
+      <input class="field-input" type="password" id="s-pw2"
+             placeholder="Repeat password" autocomplete="new-password">
+    </div>
+    <button class="btn btn-gold" id="btn-signup" onclick="doSignup()">
+      Create Account
+    </button>
+    <div class="auth-toggle">
+      Already have an account? <a onclick="showLogin()">Sign in</a>
+    </div>
+  </div>
+
+  <!-- Persistent UPL footer inside auth panel -->
+  <div class="auth-footer" role="note">
+    <svg viewBox="0 0 24 24">
+      <rect x="3" y="11" width="18" height="11" rx="2"/>
+      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+    </svg>
+    <p>
+      SynJuris is not a law firm and does not provide legal advice.
+      Your data stays on this device in local mode.
+    </p>
+  </div>
+
+</section>
+
+
+<script>
+/* ══ Auth logic ══════════════════════════════════════════════════════════════
+   Drop-in replacement for LOGIN_HTML in synjuris.py.
+   Swap: LOGIN_HTML = open('login.html').read()
+   ══════════════════════════════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+
+function showErr(msg) {
+  const el = $('form-err');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function hideErr() { $('form-err').style.display = 'none'; }
+
+function showSignup() {
+  hideErr();
+  $('view-login').classList.remove('active');
+  $('view-signup').classList.add('active');
+  $('auth-title').textContent = 'Create your account';
+  $('auth-sub').textContent = 'Free — your data stays on this device';
+  $('s-email').focus();
+}
+
+function showLogin() {
+  hideErr();
+  $('view-signup').classList.remove('active');
+  $('view-login').classList.add('active');
+  $('auth-title').textContent = 'Welcome back';
+  $('auth-sub').textContent = 'Sign in to access your case files';
+  $('l-email').focus();
+}
+
+function setLoading(id, on) {
+  const b = $(id);
+  on ? b.classList.add('loading') : b.classList.remove('loading');
+}
+
+async function doLogin() {
+  hideErr();
+  const email = $('l-email').value.trim();
+  const pw    = $('l-pw').value;
+  if (!email || !pw) { showErr('Please fill in both fields.'); return; }
+  setLoading('btn-login', true);
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pw })
+    });
+    const d = await r.json();
+    if (d.error) { showErr(d.error); return; }
+    window.location.href = '/';
+  } catch {
+    showErr('Connection error — is the server running?');
+  } finally {
+    setLoading('btn-login', false);
+  }
+}
+
+async function doSignup() {
+  hideErr();
+  const email = $('s-email').value.trim();
+  const pw    = $('s-pw').value;
+  const pw2   = $('s-pw2').value;
+  if (!email || !pw || !pw2) { showErr('Please fill in all fields.'); return; }
+  if (pw.length < 8) { showErr('Password must be at least 8 characters.'); return; }
+  if (pw !== pw2)    { showErr('Passwords do not match.'); return; }
+  setLoading('btn-signup', true);
+  try {
+    const r = await fetch('/api/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pw })
+    });
+    const d = await r.json();
+    if (d.error) { showErr(d.error); return; }
+    window.location.href = '/';
+  } catch {
+    showErr('Connection error — is the server running?');
+  } finally {
+    setLoading('btn-signup', false);
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  $('view-signup').classList.contains('active') ? doSignup() : doLogin();
+});
+
+window.addEventListener('load', () => $('l-email').focus());
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+# SynJuris v2 — Python dependencies
+# Core: no external deps required (stdlib only)
+# Optional — enables Merkle proof PDF export:
+reportlab>=4.0.0
