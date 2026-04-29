@@ -8057,7 +8057,7 @@ if __name__ == "__main__":
     threading.Thread(target=check_for_update, daemon=True).start()
     if PORT == 5000:
         threading.Thread(target=open_browser, daemon=True).start()
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer((("0.0.0.0", PORT)), Handler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
