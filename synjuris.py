@@ -1,6 +1,10 @@
+# ==============================================================================
+# SYN JURIS PRODUCTION TOP SECTION (Replacement for Lines 1-50)
+# This fixes the Line 4087 "NameError: Flask" and the sqlite3 issues.
+# ==============================================================================
 import sqlite3, json, os, re, xml.etree.ElementTree as ET
 import webbrowser, threading, urllib.request, urllib.parse
-import hashlib, hmac, time, queue, uuid, math
+import hashlib, hmac, time, queue, uuid, math, sys
 from datetime import datetime, date
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -8,32 +12,95 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from typing import Optional, Callable
 
-VERSION     = "2.0.0"
+# --- ENV CONFIGURATION ---
+VERSION     = "2.0.2"
 PORT        = int(os.environ.get("PORT", 5000))
 DB_PATH     = os.environ.get("SYNJURIS_DB", "synjuris.db")
 UPLOADS_DIR = os.environ.get("SYNJURIS_UPLOADS", "uploads")
 API_KEY     = os.environ.get("ANTHROPIC_API_KEY", "")
 LOCAL_MODE  = os.environ.get("SYNJURIS_LOCAL", "1") == "1"
 
+# --- RENDER COMPATIBILITY FIXES ---
+# Defining 'Flask' prevents crashes on Line 4087 and elsewhere where
+# old code checks for the Flask framework.
+Flask = False
+
 class Handler(BaseHTTPRequestHandler):
-    """The main server logic bridge."""
+    """The main server logic bridge for Render."""
     protocol_version = "HTTP/1.1"
+
+    def log_message(self, format, *args):
+        """Prints logs to the Render dashboard."""
+        sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format%args))
+
     def body(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        return json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 0:
+                return json.loads(self.rfile.read(content_length).decode('utf-8'))
+        except Exception as e:
+            print(f"Error parsing request body: {e}")
+        return {}
     
     def do_GET(self):
-        # Health check for Render
+        # Health check for Render - MUST STAY HERE
         if self.path == "/health":
-            self.send_response(200); self.end_headers()
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
             self.wfile.write(b"OK")
-            return
-VERSION     = "2.0.0"
+            return# ==============================================================================
+# SYN JURIS PRODUCTION TOP SECTION (Replacement for Lines 1-50)
+# This fixes the Line 4087 "NameError: Flask" and the sqlite3 issues.
+# ==============================================================================
+import sqlite3, json, os, re, xml.etree.ElementTree as ET
+import webbrowser, threading, urllib.request, urllib.parse
+import hashlib, hmac, time, queue, uuid, math, sys
+from datetime import datetime, date
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+from concurrent.futures import ThreadPoolExecutor
+from collections import OrderedDict
+from typing import Optional, Callable
+
+# --- ENV CONFIGURATION ---
+VERSION     = "2.0.2"
 PORT        = int(os.environ.get("PORT", 5000))
 DB_PATH     = os.environ.get("SYNJURIS_DB", "synjuris.db")
 UPLOADS_DIR = os.environ.get("SYNJURIS_UPLOADS", "uploads")
 API_KEY     = os.environ.get("ANTHROPIC_API_KEY", "")
 LOCAL_MODE  = os.environ.get("SYNJURIS_LOCAL", "1") == "1"
+
+# --- RENDER COMPATIBILITY FIXES ---
+# Defining 'Flask' prevents crashes on Line 4087 and elsewhere where
+# old code checks for the Flask framework.
+Flask = False
+
+class Handler(BaseHTTPRequestHandler):
+    """The main server logic bridge for Render."""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format, *args):
+        """Prints logs to the Render dashboard."""
+        sys.stderr.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format%args))
+
+    def body(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 0:
+                return json.loads(self.rfile.read(content_length).decode('utf-8'))
+        except Exception as e:
+            print(f"Error parsing request body: {e}")
+        return {}
+    
+    def do_GET(self):
+        # Health check for Render - MUST STAY HERE
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
+            return
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. CORE INTELLIGENCE: THE STRUCTURE ENGINE
