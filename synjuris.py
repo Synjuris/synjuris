@@ -8193,8 +8193,15 @@ def app(environ, start_response):
     WSGI bridge that directs Render traffic into your existing SynJurisHandler.
     """
     from io import BytesIO
+    import os
+    import sys
 
-    # 1. We create a mock version of the 'self' object your code expects
+    # 1. FIX DATABASE PATH FOR RENDER
+    # This ensures your main code finds the .db file in the same folder
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    os.environ["DATABASE_PATH"] = os.path.join(current_dir, "synjuris.db")
+
+    # 2. Create a mock version of the 'self.request' object
     class MockRequest:
         def makefile(self, *args, **kwargs):
             return BytesIO()
@@ -8202,43 +8209,59 @@ def app(environ, start_response):
             pass
         def close(self):
             pass
+        def getsockname(self):
+            return ("0.0.0.0", 80)
 
-    # 2. Initialize your existing handler without starting a real network server
-    handler = SynJurisHandler(MockRequest(), ("0.0.0.0", 0), None)
-    
-    # 3. Setup the environment so 'self.path', 'self.wfile', and headers work
-    output_buffer = BytesIO()
-    handler.wfile = output_buffer
-    handler.rfile = BytesIO()
-    
-    # These attributes are required by standard BaseHTTPRequestHandler logic
-    handler.request_version = "HTTP/1.1"
-    handler.protocol_version = "HTTP/1.1"
-    handler.requestline = f"GET {environ.get('PATH_INFO', '/')} HTTP/1.1"
-    handler.command = "GET"
-    handler.path = environ.get('PATH_INFO', '/')
-    
-    # Populate headers (useful if your code checks User-Agent, etc.)
-    from http.client import HTTPMessage
-    handler.headers = HTTPMessage()
-    for key, val in environ.items():
-        if key.startswith('HTTP_'):
-            handler.headers.add_header(key[5:].replace('_', '-'), val)
+    # 3. Mock Server object to satisfy BaseHTTPRequestHandler internals
+    class MockServer:
+        def __init__(self):
+            self.server_name = "synjuris.com"
+            self.server_port = 80
 
-    # 4. EXECUTE YOUR ACTUAL do_GET LOGIC
+    # 4. Initialize your existing handler
     try:
-        handler.do_GET()
-    except Exception as e:
-        start_response('500 Internal Error', [('Content-Type', 'text/plain')])
-        return [f"Logic Error: {str(e)}".encode()]
+        mock_server = MockServer()
+        handler = SynJurisHandler(MockRequest(), ("0.0.0.0", 0), mock_server)
+        
+        # Setup input/output streams
+        output_buffer = BytesIO()
+        handler.wfile = output_buffer
+        handler.rfile = BytesIO()
+        
+        # Standard attributes
+        handler.request_version = "HTTP/1.1"
+        handler.protocol_version = "HTTP/1.1"
+        handler.command = "GET"
+        
+        # Ensure we pass the full path including query strings (CRITICAL FOR ROUTING)
+        path = environ.get('PATH_INFO', '/')
+        query = environ.get('QUERY_STRING', '')
+        handler.path = f"{path}?{query}" if query else path
+        handler.requestline = f"GET {handler.path} HTTP/1.1"
+        
+        # Populate headers
+        from http.client import HTTPMessage
+        handler.headers = HTTPMessage()
+        for key, val in environ.items():
+            if key.startswith('HTTP_'):
+                handler.headers.add_header(key[5:].replace('_', '-'), val)
+            elif key in ('CONTENT_TYPE', 'CONTENT_LENGTH'):
+                handler.headers.add_header(key.replace('_', '-'), val)
 
-    # 5. HEADER HANDLING
-    # We grab everything your code wrote to the buffer.
+        # 5. EXECUTE YOUR ACTUAL do_GET LOGIC
+        handler.do_GET()
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        start_response('500 Internal Error', [('Content-Type', 'text/plain')])
+        return [f"CRITICAL ERROR IN YOUR CODE:\n\n{error_details}".encode()]
+
+    # 6. HEADER HANDLING & CLEANUP
     full_content = output_buffer.getvalue()
     
-    # Check if the handler wrote its own HTTP/1.1 headers (the cause of the text clutter)
+    # Strip the raw HTTP status line text if your handler wrote it
     if full_content.startswith(b"HTTP/1."):
-        # If headers are present, we split at the first blank line (\r\n\r\n or \n\n)
         if b'\r\n\r\n' in full_content:
             _, body = full_content.split(b'\r\n\r\n', 1)
         elif b'\n\n' in full_content:
@@ -8248,11 +8271,6 @@ def app(environ, start_response):
     else:
         body = full_content
 
-    # If the body is still empty, provide a fallback
-    if not body.strip():
-        body = b"<h1>SynJuris</h1><p>Environment active, but no content was generated.</p>"
-
-    # Send a clean response to the browser
     status = '200 OK'
     response_headers = [('Content-type', 'text/html; charset=utf-8')]
     start_response(status, response_headers)
@@ -8261,5 +8279,7 @@ def app(environ, start_response):
 if __name__ == "__main__":
     # This remains so your local 'python3 synjuris.py' still works exactly the same
     server = ThreadingHTTPServer(('0.0.0.0', PORT), SynJurisHandler)
+    print(f"Starting SynJuris Local on port {PORT}...")
+    server.serve_forever()
     print(f"Starting SynJuris Local on port {PORT}...")
     server.serve_forever()
