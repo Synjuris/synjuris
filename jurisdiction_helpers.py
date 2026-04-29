@@ -3,7 +3,6 @@ jurisdiction_helpers.py — SynJuris v2
 Centralized jurisdiction statute resolution and alias mapping.
 """
 
-# Mapping of states to primary custody, support, and DV statutes
 JURISDICTION_LAW = {
     "Alabama":        {"custody": "Ala. Code § 30-3-1", "support": "Ala. Code § 30-3-110", "dv": "Ala. Code § 30-5-1"},
     "Alaska":         {"custody": "Alaska Stat. § 25.20.060", "support": "Alaska Stat. § 25.27.020", "dv": "Alaska Stat. § 18.66.100"},
@@ -70,38 +69,17 @@ JURISDICTION_ALIASES = {
     "sd":"South Dakota","tn":"Tennessee","tx":"Texas","ut":"Utah","vt":"Vermont",
     "va":"Virginia","wa":"Washington","wv":"West Virginia","wi":"Wisconsin","wy":"Wyoming",
     "dc":"Washington D.C.","d.c.":"Washington D.C.",
-    "tenn":"Tennessee","tenn.":"Tennessee","calif":"California","calif.":"California",
-    "colo":"Colorado","conn":"Connecticut","mass":"Massachusetts","mich":"Michigan",
-    "minn":"Minnesota","penn":"Pennsylvania","wisc":"Wisconsin",
 }
 
 def resolve_jurisdiction(raw):
-    """Clean up user input and return canonical state name and statutes."""
-    if not raw:
-        return None, {}
+    if not raw: return None, {}
     key = raw.strip().lower()
-    canonical = JURISDICTION_ALIASES.get(key) or next(
-        (k for k in JURISDICTION_LAW if k.lower() == key), None
-    )
-    if canonical:
-        return canonical, JURISDICTION_LAW.get(canonical, {})
-    for k in JURISDICTION_LAW:
-        if k.lower() in key:
-            return k, JURISDICTION_LAW[k]
-    return raw.title(), {}
+    canonical = JURISDICTION_ALIASES.get(key) or next((k for k in JURISDICTION_LAW if k.lower() == key), None)
+    return (canonical, JURISDICTION_LAW.get(canonical, {})) if canonical else (raw.title(), {})
 
 def jurisdiction_statute_block(jurisdiction):
-    """Generate a text block for inclusion in AI prompts or document headers."""
     name, statutes = resolve_jurisdiction(jurisdiction)
-    if not statutes:
-        return (f"Jurisdiction: {name}\n"
-                "(Specific statute codes not available — describe general legal principles "
-                "and encourage user to verify their state's laws.)")
+    if not statutes: return f"Jurisdiction: {name}\n(Specific statutes not listed.)"
     lines = [f"Jurisdiction: {name}"]
-    if statutes.get("custody"):
-        lines.append(f"  Custody statute:   {statutes['custody']}")
-    if statutes.get("support"):
-        lines.append(f"  Support statute:   {statutes['support']}")
-    if statutes.get("dv"):
-        lines.append(f"  DV/protection:     {statutes['dv']}")
+    for k, v in statutes.items(): lines.append(f"  {k.title()}: {v}")
     return "\n".join(lines)
