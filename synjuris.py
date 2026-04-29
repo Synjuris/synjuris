@@ -8233,12 +8233,21 @@ def app(environ, start_response):
         start_response('500 Internal Error', [('Content-Type', 'text/plain')])
         return [f"Logic Error: {str(e)}".encode()]
 
-    # 5. Extract what your code wrote to 'self.wfile' and send it to Render
+    # 5. CLEANUP HEADERS AND SEND
+    # Your handler might have written "HTTP/1.1 200 OK..." into the buffer.
+    # We strip that out so only the HTML remains for the browser to render properly.
+    full_content = output_buffer.getvalue()
+    
+    # If the buffer contains HTTP header markers (\r\n\r\n), we skip past them
+    if b'\r\n\r\n' in full_content:
+        html_body = full_content.split(b'\r\n\r\n', 1)
+    else:
+        html_body = full_content
+
     status = '200 OK'
-    # We use utf-8 to ensure all legal symbols render correctly
     headers = [('Content-type', 'text/html; charset=utf-8')]
     start_response(status, headers)
-    return [output_buffer.getvalue()]
+    return [html_body]
 
 if __name__ == "__main__":
     # This remains so your local 'python3 synjuris.py' still works exactly the same
