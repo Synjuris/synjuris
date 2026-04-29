@@ -8233,21 +8233,21 @@ def app(environ, start_response):
         start_response('500 Internal Error', [('Content-Type', 'text/plain')])
         return [f"Logic Error: {str(e)}".encode()]
 
-    # 5. CLEANUP HEADERS AND SEND
-    # Your handler might have written "HTTP/1.1 200 OK..." into the buffer.
-    # We strip that out so only the HTML remains for the browser to render properly.
+    # 5. DATA EXTRACTION
+    # We grab everything your code wrote. 
     full_content = output_buffer.getvalue()
     
-    # If the buffer contains HTTP header markers (\r\n\r\n), we skip past them
-    if b'\r\n\r\n' in full_content:
-        html_body = full_content.split(b'\r\n\r\n', 1)
-    else:
-        html_body = full_content
+    # Check if the handler actually produced anything
+    if not full_content:
+        start_response('200 OK', [('Content-type', 'text/html; charset=utf-8')])
+        return [b"<h1>SynJuris</h1><p>The handler returned no content. Please check your do_GET logic.</p>"]
 
+    # If your handler wrote raw HTTP headers, we just send it as is. 
+    # Modern browsers are usually smart enough to handle a duplicate 200 OK line.
     status = '200 OK'
     headers = [('Content-type', 'text/html; charset=utf-8')]
     start_response(status, headers)
-    return [html_body]
+    return [full_content]
 
 if __name__ == "__main__":
     # This remains so your local 'python3 synjuris.py' still works exactly the same
