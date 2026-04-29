@@ -8169,16 +8169,6 @@ class SynJurisHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(f"<h1>SynJuris v{VERSION}</h1><p>Local environment active.</p>".encode())
 
-# ══════════════════════════════════════════════════════════════════════════════
-# [KEEP ALL 8,000+ LINES OF YOUR ORIGINAL CODE STARTING FROM HERE]
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ... (Your 8,000+ lines of original legal engine logic remain here) ...
-
- ══════════════════════════════════════════════════════════════════════════════
-# THE RENDER/CLOUD BRIDGE (Resolves Screenshot AttributeError)
-# ══════════════════════════════════════════════════════════════════════════════
-
 if Flask:
     app = Flask(__name__)
 
@@ -8189,7 +8179,6 @@ if Flask:
         
         try:
             # Injecting the missing attributes your handler expects from a real socket
-            # This specifically kills the 'request_version' AND 'requestline' errors
             SynJurisHandler.protocol_version = "HTTP/1.1"
             SynJurisHandler.request_version = "HTTP/1.1"
             
@@ -8204,6 +8193,7 @@ if Flask:
                     self.server_name = "synjuris.com"
                     self.server_port = 80
 
+            # Instantiate with safety
             handler = SynJurisHandler(MockRequest(), ("127.0.0.1", 0), MockServer())
             
             handler.wfile = BytesIO()
@@ -8214,7 +8204,7 @@ if Flask:
             full_query = flask_req.query_string.decode('utf-8')
             handler.path = f"/{path}?{full_query}" if full_query else f"/{path}"
             
-            # THE FIX: Spoof the log info so the internal Python server logic doesn't freak out
+            # Spoof log info to prevent Python's internal logger from crashing
             handler.requestline = f"GET {handler.path} HTTP/1.1"
             handler.client_address = ("127.0.0.1", 0)
             
@@ -8249,16 +8239,10 @@ if __name__ == "__main__":
     if "init_db" in globals():
         globals()["init_db"]()
         
-    print(f"SynJuris booting on Port: {PORT}")
-    
     if "RENDER" in os.environ and Flask:
         # We are on the web: Run the Flask Bridge
-        print("Mode: Cloud Deployment (Render)")
         app.run(host='0.0.0.0', port=PORT)
     else:
         # We are at home: Run your original local server
-        print("Mode: Local Instance")
         server = ThreadingHTTPServer(('0.0.0.0', PORT), SynJurisHandler)
-        if "RENDER" not in os.environ:
-            threading.Timer(1.5, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()
         server.serve_forever()
