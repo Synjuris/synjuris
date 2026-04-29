@@ -762,37 +762,29 @@ def init_db():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODULE 10 — AI SERVICE
-# Unified LLM caller — tries Anthropic, falls back to OpenAI.
+# MODULE 10 — AI SERVICE (REFACTORED FOR LOCAL-FIRST)
+# Priority: 1. Ollama (Local) -> 2. OpenAI (Cloud Fallback) -> 3. Internal Mock
 # ══════════════════════════════════════════════════════════════════════════════
-def call_anthropic(prompt: str, system: str = "You are a legal document assistant. Never give legal advice.") -> str:
-    if not API_KEY:
-        return "[No ANTHROPIC_API_KEY configured]"
+
+def call_ollama(prompt: str, system: str = "You are a legal document assistant. Facts only.") -> str:
+    """Calls local Ollama instance (defaulting to llama3)."""
+    url = "http://localhost:11434/api/generate"
     payload = json.dumps({
-        "model": "claude-opus-4-6",
-        "max_tokens": 1024,
-        "system": system,
-        "messages": [{"role": "user", "content": prompt}],
+        "model": "llama3", # Or your preferred local model
+        "prompt": f"System: {system}\n\nUser: {prompt}",
+        "stream": False
     }).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "x-api-key": API_KEY,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-    )
+    
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
-            return data["content"][0]["text"]
-    except Exception as e:
-        return f"[Anthropic error: {e}]"
+            return data.get("response", "[Error: Empty response from Ollama]")
+    except Exception:
+        return None # Signal failure to trigger fallback
 
 def call_openai(prompt: str) -> str:
-    if not OPENAI_KEY:
-        return "[No OPENAI_API_KEY configured]"
+    if not OPENAI_KEY: return None
     payload = json.dumps({
         "model": "gpt-4o-mini",
         "messages": [
@@ -803,39 +795,41 @@ def call_openai(prompt: str) -> str:
     req = urllib.request.Request(
         "https://api.openai.com/v1/chat/completions",
         data=payload,
-        headers={
-            "Authorization": f"Bearer {OPENAI_KEY}",
-            "Content-Type": "application/json",
-        },
+        headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
             return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"[OpenAI error: {e}]"
+    except Exception:
+        return None
 
 def llm_call(prompt: str) -> str:
-    """Primary LLM call — Anthropic first, OpenAI fallback."""
-    if API_KEY:
-        return call_anthropic(prompt)
-    if OPENAI_KEY:
-        return call_openai(prompt)
-    return "[No AI API key configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.]"
+    """Primary LLM Orchestrator: Local -> Cloud -> Fail"""
+    
+    # 1. Try Local Ollama
+    local_response = call_ollama(prompt)
+    if local_response:
+        return local_response
+
+    # 2. Try OpenAI Fallback
+    cloud_response = call_openai(prompt)
+    if cloud_response:
+        return cloud_response
+
+    # 3. Last Resort: Descriptive Failure
+    return "[AI OFFLINE: Local Ollama not found and no OpenAI API key provided.]"
 
 def analyze_text_safe(text: str) -> dict:
     """Analyze text through the full safe pipeline."""
     prompt = f"""STRICT RULES:
 - Do not give legal advice
 - Do not make outcome predictions
-- Do not recommend specific actions
-- Only describe what is observed in the text
+- Only describe observed patterns in the text
 
 TEXT TO ANALYZE:
 {text}"""
     return safe_generate_with_defense(prompt, llm_call)
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # MODULE 11 — HTTP REQUEST HANDLER & ROUTES
 # All routes in one handler class.
