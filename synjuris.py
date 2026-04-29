@@ -15,28 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from typing import Optional, Callable
 
-_BASE        = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
-DB_PATH      = os.path.join(_BASE, "synjuris.db")
-API_KEY      = os.environ.get("ANTHROPIC_API_KEY", "")
-UPLOADS_DIR  = os.path.join(_BASE, "uploads")
-PORT         = int(os.environ.get("PORT", 5000))
-VERSION      = "2.0.0"
-UPDATE_URL   = "https://raw.githubusercontent.com/synjuris/synjuris/main/version.json"
-
-def check_for_update():
-    """Non-blocking startup check. Prints notice if newer version exists."""
-    try:
-        req = urllib.request.Request(UPDATE_URL, headers={"User-Agent": f"SynJuris/{VERSION}"})
-        with urllib.request.urlopen(req, timeout=4) as r:
-            data = json.loads(r.read())
-        latest = data.get("version","")
-        notes  = data.get("notes","")
-        if latest and latest != VERSION:
-            print(f"\n  ┌─ Update available: v{latest} (you have v{VERSION})")
-            if notes: print(f"  │  {notes}")
-            print(f"  └─ Download: https://github.com/synjuris/synjuris/releases/latest\n")
-    except Exception:
-        pass  # Silent — never block startup over an update check
+# THIS IS THE LINE THAT WAS MISSING FROM YOUR ORIGINAL TOP SECTION:
+from flask import Flask, make_response 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DETERMINISTIC CASE DYNAMICS ENGINE  (port of engine.ts / hash.ts / types.ts)
@@ -8185,101 +8165,75 @@ class SynJurisHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(f"<h1>SynJuris v{VERSION}</h1><p>Local environment active.</p>".encode())
 
-# --- REPLACE THE BRIDGE AT THE VERY BOTTOM WITH THIS ---
-# This code connects Gunicorn to your ACTUAL SynJurisHandler logic
+# ══════════════════════════════════════════════════════════════════════════════
+# RENDER COMPATIBILITY LAYER (The "Bridge") - AT THE VERY BOTTOM
+# ══════════════════════════════════════════════════════════════════════════════
 
-def app(environ, start_response):
-    """
-    WSGI bridge that directs Render traffic into your existing SynJurisHandler.
-    """
+app = Flask(__name__)
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def render_bridge(path):
     from io import BytesIO
-    import os
-    import sys
-
-    # 1. FIX DATABASE PATH FOR RENDER
-    # This ensures your main code finds the .db file in the same folder
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    os.environ["DATABASE_PATH"] = os.path.join(current_dir, "synjuris.db")
-
-    # 2. Create a mock version of the 'self.request' object
+    
     class MockRequest:
-        def makefile(self, *args, **kwargs):
-            return BytesIO()
-        def sendall(self, data):
-            pass
-        def close(self):
-            pass
-        def getsockname(self):
-            return ("0.0.0.0", 80)
+        def makefile(self, *args, **kwargs): return BytesIO()
+        def sendall(self, data): pass
+        def close(self): pass
+        def getsockname(self): return ("0.0.0.0", 80)
 
-    # 3. Mock Server object to satisfy BaseHTTPRequestHandler internals
     class MockServer:
         def __init__(self):
             self.server_name = "synjuris.com"
             self.server_port = 80
 
-    # 4. Initialize your existing handler
     try:
         mock_server = MockServer()
         handler = SynJurisHandler(MockRequest(), ("0.0.0.0", 0), mock_server)
         
-        # Setup input/output streams
         output_buffer = BytesIO()
         handler.wfile = output_buffer
         handler.rfile = BytesIO()
-        
-        # Standard attributes
         handler.request_version = "HTTP/1.1"
         handler.protocol_version = "HTTP/1.1"
         handler.command = "GET"
         
-        # Ensure we pass the full path including query strings (CRITICAL FOR ROUTING)
-        path = environ.get('PATH_INFO', '/')
-        query = environ.get('QUERY_STRING', '')
-        handler.path = f"{path}?{query}" if query else path
-        handler.requestline = f"GET {handler.path} HTTP/1.1"
+        from flask import request as flask_req
+        full_query = flask_req.query_string.decode('utf-8')
+        handler.path = f"/{path}?{full_query}" if full_query else f"/{path}"
         
-        # Populate headers
-        from http.client import HTTPMessage
-        handler.headers = HTTPMessage()
-        for key, val in environ.items():
-            if key.startswith('HTTP_'):
-                handler.headers.add_header(key[5:].replace('_', '-'), val)
-            elif key in ('CONTENT_TYPE', 'CONTENT_LENGTH'):
-                handler.headers.add_header(key.replace('_', '-'), val)
-
-        # 5. EXECUTE YOUR ACTUAL do_GET LOGIC
         handler.do_GET()
         
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        start_response('500 Internal Error', [('Content-Type', 'text/plain')])
-        return [f"CRITICAL ERROR IN YOUR CODE:\n\n{error_details}".encode()]
-
-    # 6. HEADER HANDLING & CLEANUP
-    full_content = output_buffer.getvalue()
-    
-    # Strip the raw HTTP status line text if your handler wrote it
-    if full_content.startswith(b"HTTP/1."):
+        full_content = output_buffer.getvalue()
         if b'\r\n\r\n' in full_content:
             _, body = full_content.split(b'\r\n\r\n', 1)
-        elif b'\n\n' in full_content:
-            _, body = full_content.split(b'\n\n', 1)
         else:
             body = full_content
-    else:
-        body = full_content
 
-    status = '200 OK'
-    response_headers = [('Content-type', 'text/html; charset=utf-8')]
-    start_response(status, response_headers)
-    return [body]
+        response = make_response(body)
+        response.headers['Content-Type'] = 'text/html; charset=utf-8'
+        return response
+
+    except Exception as e:
+        import traceback
+        return f"SynJuris Engine Error:\n{traceback.format_exc()}", 500
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STARTUP LOGIC
+# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    # This remains so your local 'python3 synjuris.py' still works exactly the same
+    # Standard check for port (critical for Render)
+    PORT = int(os.environ.get("PORT", 5000))
+    
+    print(f"Starting SynJuris v{VERSION} (Local Mode)...")
+    init_db()
+    check_for_update()
+    
     server = ThreadingHTTPServer(('0.0.0.0', PORT), SynJurisHandler)
-    print(f"Starting SynJuris Local on port {PORT}...")
-    server.serve_forever()
-    print(f"Starting SynJuris Local on port {PORT}...")
+    print(f"Open: http://localhost:{PORT}")
+    
+    if "RENDER" not in os.environ:
+        threading.Timer(1.5, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()
+    
     server.serve_forever()
