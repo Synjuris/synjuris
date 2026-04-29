@@ -8185,23 +8185,51 @@ class SynJurisHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(f"<h1>SynJuris v{VERSION}</h1><p>Local environment active.</p>".encode())
 
-# --- THE RENDER/GUNICORN BRIDGE ---
-# This allows Gunicorn to find 'app' and keeps the service alive on Render.
+# --- REPLACE THE BRIDGE AT THE VERY BOTTOM WITH THIS ---
+# This code connects Gunicorn to your ACTUAL SynJurisHandler logic
 
 def app(environ, start_response):
     """
-    This bridge allows Gunicorn to 'see' your app.
-    It wraps your existing SynJurisHandler logic.
+    WSGI bridge that directs Render traffic into your existing SynJurisHandler.
     """
+    from io import BytesIO
+
+    # 1. We create a mock version of the 'self' object your code expects
+    class MockRequest:
+        def makefile(self, *args, **kwargs):
+            return BytesIO()
+        def sendall(self, data):
+            pass
+        def close(self):
+            pass
+
+    # 2. Initialize your existing handler without starting a real network server
+    # This uses your actual 'SynJurisHandler' class defined earlier in your file
+    handler = SynJurisHandler(MockRequest(), ("0.0.0.0", 0), None)
+    
+    # 3. Setup the environment so 'self.path' and 'self.wfile' work in your code
+    output_buffer = BytesIO()
+    handler.wfile = output_buffer
+    handler.rfile = BytesIO()
+    handler.requestline = f"GET {environ.get('PATH_INFO', '/')} HTTP/1.1"
+    handler.command = "GET"
+    handler.path = environ.get('PATH_INFO', '/')
+    
+    # 4. EXECUTE YOUR ACTUAL do_GET LOGIC
+    try:
+        handler.do_GET()
+    except Exception as e:
+        start_response('500 Internal Error', [('Content-Type', 'text/plain')])
+        return [f"Logic Error: {str(e)}".encode()]
+
+    # 5. Extract what your code wrote to 'self.wfile' and send it to Render
     status = '200 OK'
     headers = [('Content-type', 'text/html; charset=utf-8')]
     start_response(status, headers)
-
-    # Returns a minimal response to satisfy health checks and prove the app is up.
-    return [f"<h1>SynJuris v{VERSION} is Online</h1><p>Status: Active</p>".encode()]
+    return [output_buffer.getvalue()]
 
 if __name__ == "__main__":
-    # This remains for your local 'python3 synjuris.py' testing
+    # This remains so your local 'python3 synjuris.py' still works exactly the same
     server = ThreadingHTTPServer(('0.0.0.0', PORT), SynJurisHandler)
-    print(f"Starting SynJuris on port {PORT}...")
+    print(f"Starting SynJuris Local on port {PORT}...")
     server.serve_forever()
