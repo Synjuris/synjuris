@@ -1881,6 +1881,178 @@ document.getElementById('ai-input').addEventListener('input', function() {
   this.style.height = 'auto';
   this.style.height = Math.min(this.scrollHeight, 100) + 'px';
 });
+
+/* ══ REAL DATA BOOTSTRAP ════════════════════════════════════════════════════
+   Loads actual case data from the API on page load.
+   If no case_id in URL, redirects to onboarding.
+   ══════════════════════════════════════════════════════════════════════════ */
+(async function bootstrap() {
+  // Get case_id from URL — if none, check for any existing cases
+  let caseId = new URLSearchParams(window.location.search).get('case');
+
+  if (!caseId) {
+    // Try to find the most recent case
+    try {
+      const r = await fetch('/api/cases');
+      const d = await r.json();
+      const cases = d.cases || d;
+      if (Array.isArray(cases) && cases.length > 0) {
+        caseId = cases[0].id;
+        window.history.replaceState({}, '', `/?case=${caseId}`);
+      } else {
+        // No cases — go to onboarding
+        window.location.href = '/onboarding';
+        return;
+      }
+    } catch(e) {
+      window.location.href = '/onboarding';
+      return;
+    }
+  }
+
+  // Load case data
+  try {
+    const [caseRes, evRes, partiesRes] = await Promise.all([
+      fetch(`/api/cases/${caseId}`),
+      fetch(`/api/cases/${caseId}/evidence`),
+      fetch(`/api/cases/${caseId}/parties`).catch(() => ({json: () => ([])})),
+    ]);
+
+    const caseData    = await caseRes.json();
+    const evData      = await evRes.json();
+
+    if (caseData.error) {
+      window.location.href = '/onboarding';
+      return;
+    }
+
+    // ── Update topbar ──────────────────────────────────────────────────────
+    const titleEl = document.getElementById('case-title-display');
+    if (titleEl && caseData.title) titleEl.textContent = caseData.title;
+
+    const badgeEl = document.querySelector('.case-type-badge');
+    if (badgeEl && caseData.case_type) {
+      const labels = {
+        custody: 'Custody / Parenting', divorce: 'Divorce / Separation',
+        domestic_violence: 'Protective Order', civil_rights: 'Civil Matter'
+      };
+      badgeEl.textContent = labels[caseData.case_type] || caseData.case_type;
+    }
+
+    // ── Update hearing countdown ───────────────────────────────────────────
+    if (caseData.hearing_date) {
+      const hearing = new Date(caseData.hearing_date);
+      const days    = Math.max(0, Math.ceil((hearing - new Date()) / 86400000));
+      ['days-countdown','countdown-days'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = days;
+      });
+      // Update hearing banner text
+      const bannerInfo = document.querySelector('.hearing-info strong');
+      if (bannerInfo) bannerInfo.textContent = `Hearing — ${caseData.court_name || 'Court'} ${caseData.case_number ? '— Case #'+caseData.case_number : ''}`;
+      const bannerSub = document.querySelector('.hearing-info span');
+      if (bannerSub) bannerSub.textContent = `${caseData.hearing_date}`;
+    }
+
+    // ── Render evidence table ──────────────────────────────────────────────
+    const exhibits = evData.evidence || evData || [];
+    if (exhibits.length > 0) renderEvidence(exhibits, caseId);
+
+    // ── Update stat cards ─────────────────────────────────────────────────
+    const confirmed = exhibits.filter(e => e.confirmed).length;
+    const pending   = exhibits.filter(e => !e.confirmed).length;
+    const statCards = document.querySelectorAll('.stat-card');
+    if (statCards[0]) {
+      statCards[0].querySelector('.stat-value').textContent = confirmed;
+      statCards[0].querySelector('.stat-sub').textContent   = `${pending} pending review`;
+    }
+
+    // ── Update nav evidence count ──────────────────────────────────────────
+    const navCount = document.getElementById('nav-ev-count');
+    if (navCount) navCount.textContent = exhibits.length;
+
+    // ── Update AI context strip ────────────────────────────────────────────
+    const ctxTags = document.querySelector('.context-tags');
+    if (ctxTags) {
+      ctxTags.innerHTML = `
+        <span class="ctx-tag ctx-tag-gold">${confirmed} confirmed exhibit${confirmed !== 1 ? 's' : ''}</span>
+        <span class="ctx-tag">${(caseData.case_type || '').replace('_',' ')}</span>
+        ${caseData.hearing_date ? '<span class="ctx-tag">Hearing: '+caseData.hearing_date+'</span>' : ''}
+      `;
+    }
+
+    // ── Update case health bars ────────────────────────────────────────────
+    try {
+      const stateRes  = await fetch(`/api/cases/${caseId}/state`);
+      const stateData = await stateRes.json();
+      if (stateData.state) {
+        const s = stateData.state;
+        const hfEv = document.getElementById('hf-evidence');
+        const hvEv = document.getElementById('hv-evidence');
+        const hfPr = document.getElementById('hf-proc');
+        const hvPr = document.getElementById('hv-proc');
+        const hfAd = document.getElementById('hf-adv');
+        const hvAd = document.getElementById('hv-adv');
+        if (hfEv) hfEv.style.width = Math.round((s.x/9)*100) + '%';
+        if (hvEv) hvEv.textContent  = s.x + '/9';
+        if (hfPr) hfPr.style.width = Math.round((s.y/9)*100) + '%';
+        if (hvPr) hvPr.textContent  = s.y + '/9';
+        if (hfAd) hfAd.style.width = Math.round((s.z/9)*100) + '%';
+        if (hvAd) hvAd.textContent  = s.z + '/9';
+      }
+    } catch(e) { /* state load optional */ }
+
+    // ── Update AI greeting ─────────────────────────────────────────────────
+    const firstMsg = document.querySelector('.msg-ai .msg-bubble');
+    if (firstMsg && caseData.title) {
+      firstMsg.innerHTML = `Your case file <strong>${escapeHtml(caseData.title)}</strong> has 
+        <strong>${confirmed}</strong> confirmed exhibit${confirmed !== 1 ? 's' : ''}.
+        I can help you research relevant legal categories, explain terminology, or draft 
+        documents for attorney review.<br><br>What would you like to work on?`;
+    }
+
+  } catch(e) {
+    console.error('Bootstrap error:', e);
+  }
+})();
+
+function renderEvidence(exhibits, caseId) {
+  const tbody = document.getElementById('evidence-tbody');
+  if (!tbody || exhibits.length === 0) return;
+  tbody.innerHTML = '';
+
+  const catColors = {
+    'Possible threatening language':         'var(--amber-dim);border-color:rgba(212,146,74,0.2);color:var(--amber)',
+    'Possible access / gatekeeping issue':   'var(--gold-dim);border-color:rgba(201,168,76,0.2);color:var(--gold-light)',
+    'Possible communication interference':   'var(--blue-dim);border-color:rgba(74,159,212,0.2);color:#7ab8e0',
+    'Possible court order compliance issue': 'var(--amber-dim);border-color:rgba(212,146,74,0.2);color:var(--amber)',
+    'Possible harassment pattern':           'var(--red-dim);border-color:rgba(224,85,85,0.2);color:var(--red)',
+  };
+
+  exhibits.forEach(ev => {
+    const cat      = ev.category || 'Uncategorized';
+    const catStyle = catColors[cat] || 'rgba(255,255,255,0.04);border-color:var(--border);color:var(--text-dim)';
+    const catTag   = `<span class="category-tag" style="background:${catStyle}">${escapeHtml(cat)}</span>`;
+
+    const statusCell = ev.confirmed
+      ? `<span class="confirmed-badge"><svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>Confirmed</span>`
+      : `<button class="confirm-btn" onclick="confirmExhibit(this,${ev.id})">Confirm exhibit</button>`;
+
+    const exhibitNum = ev.confirmed
+      ? `<span class="exhibit-num">${escapeHtml(ev.exhibit_number || '')}</span>`
+      : `<span class="exhibit-unconfirmed">— unconfirmed</span>`;
+
+    tbody.insertAdjacentHTML('beforeend', `
+      <tr>
+        <td>${exhibitNum}</td>
+        <td><div class="ev-content">${escapeHtml((ev.content || '').substring(0,80))}</div></td>
+        <td><span class="ev-date">${escapeHtml(ev.event_date || '—')}</span></td>
+        <td>${catTag}</td>
+        <td>${statusCell}</td>
+      </tr>
+    `);
+  });
+}
 </script>
 </body>
 </html>
