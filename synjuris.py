@@ -1489,6 +1489,77 @@ class SynJurisHandler(BaseHTTPRequestHandler):
             conn.close()
             _json_response(self, {"exhibit_number": ex_num, "merkle_hash": merkle_hash, "ok": True})
 
+        # ── Disclaimer ack ───────────────────────────────────────────────────
+        elif path == "/api/disclaimer/ack":
+            _record_disclaimer_ack(ip_hint=self.client_address[0])
+            _json_response(self, {"ok": True, "version": DISCLAIMER_VERSION})
+
+        # ── Portal token ─────────────────────────────────────────────────────
+        elif re.match(r"^/api/cases/(\d+)/portal-token$", path):
+            case_id = int(re.match(r"^/api/cases/(\d+)/portal-token$", path).group(1))
+            token = _generate_portal_token(case_id)
+            host  = self.headers.get("Host", f"localhost:{PORT}")
+            _json_response(self, {"token": token, "url": f"http://{host}/portal/{token}"})
+
+        elif re.match(r"^/api/cases/(\d+)/portal-token/revoke$", path):
+            case_id = int(re.match(r"^/api/cases/(\d+)/portal-token/revoke$", path).group(1))
+            conn = get_db()
+            conn.execute("UPDATE portal_tokens SET revoked=1 WHERE case_id=?", (case_id,))
+            conn.commit()
+            conn.close()
+            _json_response(self, {"ok": True})
+
+        # ── Proof PDF ────────────────────────────────────────────────────────
+        elif re.match(r"^/api/cases/(\d+)/dag-proof$", path):
+            case_id = int(re.match(r"^/api/cases/(\d+)/dag-proof$", path).group(1))
+            if not HAS_REPORTLAB:
+                _json_response(self, {"error": "reportlab not installed. Run: pip install reportlab"}, 501)
+                return
+            try:
+                pdf = _generate_proof_pdf(case_id)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Disposition", f'attachment; filename="proof-case{case_id}.pdf"')
+                self.send_header("Content-Length", str(len(pdf)))
+                self.end_headers()
+                self.wfile.write(pdf)
+            except Exception as e:
+                _json_response(self, {"error": str(e)}, 500)
+
+        # ── Exhibit confirm ──────────────────────────────────────────────────
+        elif re.match(r"^/api/cases/(\d+)/evidence/(\d+)/confirm$", path):
+            m       = re.match(r"^/api/cases/(\d+)/evidence/(\d+)/confirm$", path)
+            case_id = int(m.group(1))
+            ev_id   = int(m.group(2))
+            conn    = get_db()
+            n = (conn.execute(
+                "SELECT COUNT(*) FROM evidence WHERE case_id=? AND confirmed=1", (case_id,)
+            ).fetchone()[0] or 0) + 1
+            ex_num = f"Exhibit {n}"
+            conn.execute("UPDATE evidence SET confirmed=1, exhibit_number=? WHERE id=?", (ex_num, ev_id))
+            conn.commit()
+            ev_row = conn.execute("SELECT * FROM evidence WHERE id=?", (ev_id,)).fetchone()
+            merkle_hash = add_exhibit_to_dag(conn, case_id, dict(ev_row)) if ev_row else "n/a"
+            conn.commit()
+            conn.close()
+            _json_response(self, {"exhibit_number": ex_num, "merkle_hash": merkle_hash, "ok": True})
+
+        # ── Parties ──────────────────────────────────────────────────────────
+        elif re.match(r"^/api/cases/(\d+)/parties$", path):
+            case_id = int(re.match(r"^/api/cases/(\d+)/parties$", path).group(1))
+            name = body.get("name", "").strip()
+            role = body.get("role", "").strip()
+            if not name:
+                return _json_response(self, {"error": "name required"}, 400)
+            conn = get_db()
+            cur = conn.execute(
+                "INSERT INTO parties (case_id, name, role) VALUES (?,?,?)",
+                (case_id, name, role)
+            )
+            conn.commit()
+            conn.close()
+            _json_response(self, {"id": cur.lastrowid}, 201)
+
         else:
             _json_response(self, {"error": "Not found", "path": path}, 404)
 
@@ -1583,12 +1654,14 @@ User question: {message}"""
 
             result = safe_generate_with_defense(prompt, llm_call)
 
-            # Persist exchange
-            conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
-                         (case_id, "user", message))
-            conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
-                         (case_id, "assistant", result["content"]))
-            conn.commit()
+            # Persist exchange — only if case exists
+            case_exists = conn.execute("SELECT id FROM cases WHERE id=?", (case_id,)).fetchone()
+            if case_exists:
+                conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
+                             (case_id, "user", message))
+                conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
+                             (case_id, "assistant", result["content"]))
+                conn.commit()
             conn.close()
             _json_response(self, result)
 
