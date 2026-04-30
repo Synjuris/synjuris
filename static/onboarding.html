@@ -1,1 +1,1363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SynJuris — New Case</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════
+   SYNJURIS ONBOARDING WIZARD
+   UPL CONSTRAINTS ACTIVE:
+   - Pattern flags are research indicators, never legal findings
+   - Document output labeled as drafts requiring attorney review
+   - Disclaimer persistent in footer throughout all steps
+   - No language implying legal conclusions or representation
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  --ink:         #0a1520;
+  --ink-mid:     #0f1e2e;
+  --ink-light:   #162840;
+  --surface:     #111d2b;
+  --surface-hi:  #162436;
+  --surface-lo:  #0d1825;
+  --border:      rgba(255,255,255,0.07);
+  --border-hi:   rgba(201,168,76,0.35);
+  --gold:        #c9a84c;
+  --gold-light:  #e2c16e;
+  --gold-dim:    rgba(201,168,76,0.12);
+  --text:        #e8dfc8;
+  --text-mid:    #a0b0c0;
+  --text-dim:    #506070;
+  --green:       #4caf82;
+  --green-dim:   rgba(76,175,130,0.12);
+  --amber:       #d4924a;
+  --amber-dim:   rgba(212,146,74,0.1);
+  --red:         #e05555;
+  --blue:        #4a9fd4;
+  --blue-dim:    rgba(74,159,212,0.1);
+  --radius:      8px;
+  --radius-lg:   12px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { height: 100%; }
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-weight: 300;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Shell ─────────────────────────────────────────────────── */
+.shell {
+  flex: 1;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+}
+
+/* ── Top bar ───────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 40px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-lo);
+}
+
+.topbar-logo {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 18px;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+
+/* Step progress */
+.steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  position: relative;
+}
+
+.step-item:first-child { padding-left: 0; }
+.step-item:last-child  { padding-right: 0; }
+
+.step-item::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+.step-item:last-child::after { display: none; }
+
+.step-num {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--ink-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  transition: all 0.25s;
+}
+
+.step-label {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-weight: 400;
+  white-space: nowrap;
+  transition: color 0.25s;
+}
+
+/* Active step */
+.step-item.active .step-num {
+  background: var(--gold-dim);
+  border-color: var(--gold);
+  color: var(--gold);
+}
+.step-item.active .step-label { color: var(--text-mid); }
+
+/* Completed step */
+.step-item.done .step-num {
+  background: var(--green-dim);
+  border-color: var(--green);
+  color: var(--green);
+}
+.step-item.done .step-label { color: var(--text-dim); }
+
+.skip-link {
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 0.18s;
+}
+.skip-link:hover { color: var(--text-mid); }
+
+/* ── Main content ──────────────────────────────────────────── */
+.main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 56px 24px 40px;
+}
+
+.wizard-card {
+  width: 100%;
+  max-width: 680px;
+}
+
+/* Step panels */
+.step-panel {
+  display: none;
+  opacity: 0;
+  transform: translateX(20px);
+  transition: opacity 0.3s, transform 0.3s;
+}
+.step-panel.active {
+  display: block;
+  animation: slideIn 0.3s ease forwards;
+}
+.step-panel.exit {
+  animation: slideOut 0.25s ease forwards;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes slideOut {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(-20px); }
+}
+
+/* Step header */
+.step-head {
+  margin-bottom: 36px;
+}
+
+.step-eyebrow {
+  font-family: 'DM Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 10px;
+  opacity: 0.8;
+}
+
+.step-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 34px;
+  font-weight: 300;
+  line-height: 1.15;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.step-desc {
+  font-size: 14px;
+  color: var(--text-dim);
+  line-height: 1.7;
+  max-width: 500px;
+}
+
+/* ── Step 1: Case type grid ────────────────────────────────── */
+.case-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
+.case-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s, transform 0.15s;
+  position: relative;
+  overflow: hidden;
+}
+
+.case-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--gold-dim);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.case-card:hover {
+  border-color: rgba(201,168,76,0.25);
+  transform: translateY(-1px);
+}
+
+.case-card.selected {
+  border-color: var(--gold);
+  background: var(--surface-hi);
+}
+.case-card.selected::before { opacity: 1; }
+
+.case-card-inner { position: relative; z-index: 1; }
+
+.case-icon {
+  width: 36px; height: 36px;
+  border-radius: 8px;
+  background: var(--ink-light);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+  transition: border-color 0.2s, background 0.2s;
+}
+.case-card.selected .case-icon {
+  background: var(--gold-dim);
+  border-color: rgba(201,168,76,0.3);
+}
+
+.case-icon svg {
+  width: 16px; height: 16px;
+  stroke: var(--text-dim);
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 0.2s;
+}
+.case-card.selected .case-icon svg { stroke: var(--gold); }
+
+.case-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 5px;
+}
+
+.case-hint {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.check-mark {
+  position: absolute;
+  top: 14px; right: 14px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: var(--gold);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.check-mark svg {
+  width: 10px; height: 10px;
+  stroke: var(--ink);
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.case-card.selected .check-mark { display: flex; }
+
+/* Context preview — what gets pre-loaded */
+.context-preview {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 28px;
+  display: none;
+}
+.context-preview.visible { display: block; animation: fadeIn 0.25s ease; }
+
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.preview-title {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+.preview-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag {
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.tag-gold  { background: var(--gold-dim);  border: 1px solid rgba(201,168,76,0.2); color: var(--gold-light); }
+.tag-blue  { background: var(--blue-dim);  border: 1px solid rgba(74,159,212,0.2); color: #7ab8e0; }
+.tag-green { background: var(--green-dim); border: 1px solid rgba(76,175,130,0.2); color: #7dcca8; }
+.tag-dim   { background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--text-dim); }
+
+/* ── Step 2: Parties ───────────────────────────────────────── */
+.parties-section {
+  margin-bottom: 28px;
+}
+
+.section-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.section-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.party-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 10px;
+}
+
+.party-role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold);
+  background: var(--gold-dim);
+  border: 1px solid rgba(201,168,76,0.2);
+  border-radius: 4px;
+  padding: 3px 8px;
+  margin-bottom: 12px;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.field { margin-bottom: 0; }
+
+.field-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 7px;
+}
+
+.field-input, .field-select {
+  width: 100%;
+  background: var(--ink-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 13px;
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 13.5px;
+  font-weight: 300;
+  outline: none;
+  transition: border-color 0.18s, box-shadow 0.18s;
+  -webkit-appearance: none;
+}
+.field-input::placeholder { color: var(--text-dim); opacity: 0.5; }
+.field-input:focus, .field-select:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(201,168,76,0.08);
+}
+
+.field-select {
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23506070' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+.field-select option { background: var(--ink-mid); color: var(--text); }
+
+.field-full { grid-column: 1 / -1; }
+
+/* ── Step 3: First incident ────────────────────────────────── */
+.incident-area {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.incident-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  font-size: 14px;
+  font-weight: 300;
+  line-height: 1.7;
+  outline: none;
+  resize: none;
+  min-height: 160px;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+.incident-input::placeholder {
+  color: var(--text-dim);
+  opacity: 0.5;
+  font-style: italic;
+}
+.incident-input:focus {
+  border-color: rgba(201,168,76,0.4);
+  box-shadow: 0 0 0 3px rgba(201,168,76,0.06);
+}
+
+.char-count {
+  position: absolute;
+  bottom: 12px; right: 14px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+/* Pattern flags — UPL-safe framing */
+.pattern-zone {
+  min-height: 60px;
+  margin-bottom: 20px;
+  transition: all 0.3s;
+}
+
+.pattern-idle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  background: rgba(255,255,255,0.02);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+.pattern-idle svg {
+  width: 14px; height: 14px;
+  stroke: var(--text-dim);
+  fill: none;
+  stroke-width: 1.5;
+  flex-shrink: 0;
+}
+
+.pattern-results {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: none;
+}
+.pattern-results.visible { display: block; animation: fadeIn 0.2s ease; }
+
+.pattern-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+}
+
+.pattern-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.pattern-header-left svg {
+  width: 12px; height: 12px;
+  stroke: var(--amber);
+  fill: none;
+  stroke-width: 1.8;
+}
+
+/* UPL disclaimer on pattern output */
+.pattern-upl {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-style: italic;
+  font-weight: 300;
+}
+
+.pattern-list {
+  padding: 10px 0;
+}
+
+.pattern-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  animation: fadeIn 0.2s ease;
+}
+.pattern-flag:last-child { border-bottom: none; }
+
+.flag-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+.flag-strong { background: var(--amber); box-shadow: 0 0 6px rgba(212,146,74,0.4); }
+.flag-likely { background: var(--blue);  box-shadow: 0 0 6px rgba(74,159,212,0.3); }
+.flag-possible{ background: var(--text-dim); }
+
+.flag-body { flex: 1; }
+
+.flag-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.flag-note {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* ── Date field ────────────────────────────────────────────── */
+.date-row {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 12px;
+  margin-bottom: 24px;
+  align-items: end;
+}
+
+/* ── Nav buttons ───────────────────────────────────────────── */
+.nav-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: var(--radius);
+  padding: 11px 22px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: all 0.18s;
+  position: relative;
+  overflow: hidden;
+  text-decoration: none;
+}
+
+.btn svg {
+  width: 14px; height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.btn-gold {
+  background: var(--gold);
+  color: var(--ink);
+}
+.btn-gold:hover {
+  background: var(--gold-light);
+  box-shadow: 0 4px 16px rgba(201,168,76,0.25);
+}
+.btn-gold:active { transform: translateY(1px); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover {
+  color: var(--text-mid);
+  border-color: rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.03);
+}
+
+.btn.loading { color: transparent; pointer-events: none; }
+.btn.loading::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 14px; height: 14px;
+  margin: -7px 0 0 -7px;
+  border: 2px solid var(--ink);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.65s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Persistent footer disclaimer ─────────────────────────── */
+.disclaimer-bar {
+  padding: 12px 40px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-lo);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.disclaimer-bar svg {
+  width: 12px; height: 12px;
+  stroke: var(--amber);
+  fill: none;
+  stroke-width: 1.5;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.disclaimer-bar p {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.disclaimer-bar strong { color: var(--amber); font-weight: 500; opacity: 0.9; }
+
+/* ── Responsive ────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .topbar { padding: 16px 20px; }
+  .step-label { display: none; }
+  .main { padding: 36px 16px 28px; }
+  .case-grid { grid-template-columns: 1fr; }
+  .field-row { grid-template-columns: 1fr; }
+  .date-row  { grid-template-columns: 1fr; }
+  .disclaimer-bar { padding: 12px 20px; }
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ── Top bar ──────────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="topbar-logo">SynJuris</div>
+
+    <nav class="steps" aria-label="Setup progress">
+      <div class="step-item active" id="step-nav-1">
+        <div class="step-num" id="step-num-1">1</div>
+        <div class="step-label">Case Type</div>
+      </div>
+      <div class="step-item" id="step-nav-2">
+        <div class="step-num" id="step-num-2">2</div>
+        <div class="step-label">Parties</div>
+      </div>
+      <div class="step-item" id="step-nav-3">
+        <div class="step-num" id="step-num-3">3</div>
+        <div class="step-label">First Entry</div>
+      </div>
+    </nav>
+
+    <a class="skip-link" onclick="skipWizard()">Skip setup →</a>
+  </header>
+
+
+  <!-- ── Main ─────────────────────────────────────────────────────────────── -->
+  <main class="main">
+    <div class="wizard-card">
+
+
+      <!-- ════════════════════════════════════════════════════════
+           STEP 1 — Case Type
+           ════════════════════════════════════════════════════ -->
+      <div class="step-panel active" id="panel-1">
+
+        <div class="step-head">
+          <div class="step-eyebrow">Step 1 of 3</div>
+          <h1 class="step-title">What are you<br>dealing with?</h1>
+          <p class="step-desc">
+            Select the category that best fits your situation.
+            This pre-loads relevant evidence categories and document templates
+            — you can adjust everything later.
+          </p>
+        </div>
+
+        <div class="case-grid" id="case-grid">
+
+          <div class="case-card" data-type="custody" onclick="selectCase(this)">
+            <div class="check-mark"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+            <div class="case-card-inner">
+              <div class="case-icon">
+                <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              </div>
+              <div class="case-name">Custody / Parenting Time</div>
+              <div class="case-hint">Parenting plans, visitation disputes, modification requests</div>
+            </div>
+          </div>
+
+          <div class="case-card" data-type="divorce" onclick="selectCase(this)">
+            <div class="check-mark"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+            <div class="case-card-inner">
+              <div class="case-icon">
+                <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+              </div>
+              <div class="case-name">Divorce / Separation</div>
+              <div class="case-hint">Asset division, spousal support, dissolution proceedings</div>
+            </div>
+          </div>
+
+          <div class="case-card" data-type="domestic_violence" onclick="selectCase(this)">
+            <div class="check-mark"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+            <div class="case-card-inner">
+              <div class="case-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </div>
+              <div class="case-name">Protective Order</div>
+              <div class="case-hint">Harassment, threats, domestic violence documentation</div>
+            </div>
+          </div>
+
+          <div class="case-card" data-type="civil_rights" onclick="selectCase(this)">
+            <div class="check-mark"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
+            <div class="case-card-inner">
+              <div class="case-icon">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+              </div>
+              <div class="case-name">Civil Rights / Other</div>
+              <div class="case-hint">Civil disputes, rights violations, general civil matters</div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Context preview — shown after selection -->
+        <div class="context-preview" id="context-preview">
+          <div class="preview-title">Pre-loaded for your case type</div>
+          <div class="preview-tags" id="preview-tags"></div>
+        </div>
+
+        <div class="nav-row">
+          <div></div>
+          <button class="btn btn-gold" id="btn-next-1" onclick="goStep(2)" disabled
+                  style="opacity:0.4;cursor:not-allowed">
+            Continue
+            <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </button>
+        </div>
+
+      </div><!-- /panel-1 -->
+
+
+      <!-- ════════════════════════════════════════════════════════
+           STEP 2 — Parties
+           ════════════════════════════════════════════════════ -->
+      <div class="step-panel" id="panel-2">
+
+        <div class="step-head">
+          <div class="step-eyebrow">Step 2 of 3</div>
+          <h1 class="step-title">Who is involved?</h1>
+          <p class="step-desc">
+            Enter the parties. This personalizes every document draft
+            and AI response with the correct names and roles.
+          </p>
+        </div>
+
+        <!-- Petitioner / You -->
+        <div class="parties-section">
+          <div class="section-label">Your information</div>
+          <div class="party-row">
+            <div class="party-role-badge">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a7 7 0 0 1 13 0"/></svg>
+              Petitioner / You
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label class="field-label" for="p1-name">Full name</label>
+                <input class="field-input" type="text" id="p1-name"
+                       placeholder="Your legal name" autocomplete="name">
+              </div>
+              <div class="field">
+                <label class="field-label" for="p1-role">Your role</label>
+                <select class="field-select" id="p1-role">
+                  <option value="Petitioner">Petitioner</option>
+                  <option value="Plaintiff">Plaintiff</option>
+                  <option value="Respondent">Respondent</option>
+                  <option value="Defendant">Defendant</option>
+                  <option value="Parent">Parent</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Opposing party -->
+        <div class="parties-section">
+          <div class="section-label">Opposing party</div>
+          <div class="party-row">
+            <div class="party-role-badge" style="color:var(--text-mid);background:rgba(255,255,255,0.04);border-color:var(--border)">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a7 7 0 0 1 13 0"/></svg>
+              Respondent / Opposing
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label class="field-label" for="p2-name">Full name</label>
+                <input class="field-input" type="text" id="p2-name"
+                       placeholder="Their legal name">
+              </div>
+              <div class="field">
+                <label class="field-label" for="p2-role">Their role</label>
+                <select class="field-select" id="p2-role">
+                  <option value="Respondent">Respondent</option>
+                  <option value="Defendant">Defendant</option>
+                  <option value="Petitioner">Petitioner</option>
+                  <option value="Plaintiff">Plaintiff</option>
+                  <option value="Parent">Parent</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Jurisdiction -->
+        <div class="parties-section">
+          <div class="section-label">Jurisdiction</div>
+          <div class="party-row">
+            <div class="field-row">
+              <div class="field">
+                <label class="field-label" for="jurisdiction">State / Jurisdiction</label>
+                <select class="field-select" id="jurisdiction">
+                  <option value="">Select state…</option>
+                  <option>Alabama</option><option>Alaska</option><option>Arizona</option>
+                  <option>Arkansas</option><option>California</option><option>Colorado</option>
+                  <option>Connecticut</option><option>Delaware</option><option>Florida</option>
+                  <option>Georgia</option><option>Hawaii</option><option>Idaho</option>
+                  <option>Illinois</option><option>Indiana</option><option>Iowa</option>
+                  <option>Kansas</option><option>Kentucky</option><option>Louisiana</option>
+                  <option>Maine</option><option>Maryland</option><option>Massachusetts</option>
+                  <option>Michigan</option><option>Minnesota</option><option>Mississippi</option>
+                  <option>Missouri</option><option>Montana</option><option>Nebraska</option>
+                  <option>Nevada</option><option>New Hampshire</option><option>New Jersey</option>
+                  <option>New Mexico</option><option>New York</option><option>North Carolina</option>
+                  <option>North Dakota</option><option>Ohio</option><option>Oklahoma</option>
+                  <option>Oregon</option><option>Pennsylvania</option><option>Rhode Island</option>
+                  <option>South Carolina</option><option>South Dakota</option><option>Tennessee</option>
+                  <option>Texas</option><option>Utah</option><option>Vermont</option>
+                  <option>Virginia</option><option>Washington</option><option>West Virginia</option>
+                  <option>Wisconsin</option><option>Wyoming</option>
+                  <option>Washington D.C.</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="court-name">Court name <span style="opacity:.5;font-weight:300">(optional)</span></label>
+                <input class="field-input" type="text" id="court-name"
+                       placeholder="e.g. Superior Court of…">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="nav-row">
+          <button class="btn btn-ghost" onclick="goStep(1)">
+            <svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+            Back
+          </button>
+          <button class="btn btn-gold" onclick="goStep(3)">
+            Continue
+            <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+          </button>
+        </div>
+
+      </div><!-- /panel-2 -->
+
+
+      <!-- ════════════════════════════════════════════════════════
+           STEP 3 — First Incident
+           ════════════════════════════════════════════════════ -->
+      <div class="step-panel" id="panel-3">
+
+        <div class="step-head">
+          <div class="step-eyebrow">Step 3 of 3</div>
+          <h1 class="step-title">Tell me what happened.</h1>
+          <p class="step-desc">
+            Describe the most recent or significant incident in your own words.
+            As you type, SynJuris will flag potentially relevant legal
+            research categories — these are starting points, not legal conclusions.
+          </p>
+        </div>
+
+        <div class="date-row">
+          <div class="field">
+            <label class="field-label" for="incident-date">Date of incident</label>
+            <input class="field-input" type="date" id="incident-date">
+          </div>
+          <div class="field">
+            <label class="field-label" for="incident-source">Source / How recorded</label>
+            <input class="field-input" type="text" id="incident-source"
+                   placeholder="e.g. Text message, email, in person…">
+          </div>
+        </div>
+
+        <div class="incident-area">
+          <textarea class="incident-input" id="incident-text"
+                    placeholder="Describe what happened in your own words. Be as specific as you can — dates, times, exact words used, who was present…"
+                    oninput="onIncidentInput(this)" maxlength="2000"></textarea>
+          <div class="char-count" id="char-count">0 / 2000</div>
+        </div>
+
+        <!-- Pattern detection zone — UPL-safe -->
+        <div class="pattern-zone" id="pattern-zone">
+          <div class="pattern-idle" id="pattern-idle">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Start typing to see potentially relevant research categories
+          </div>
+          <div class="pattern-results" id="pattern-results">
+            <div class="pattern-header">
+              <div class="pattern-header-left">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                Potentially relevant research areas
+              </div>
+              <div class="pattern-upl">Research only — not legal advice</div>
+            </div>
+            <div class="pattern-list" id="pattern-list"></div>
+          </div>
+        </div>
+
+        <div class="nav-row">
+          <button class="btn btn-ghost" onclick="goStep(2)">
+            <svg viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+            Back
+          </button>
+          <button class="btn btn-gold" id="btn-finish" onclick="finishSetup()">
+            Create Case File
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          </button>
+        </div>
+
+      </div><!-- /panel-3 -->
+
+
+    </div><!-- /wizard-card -->
+  </main>
+
+
+  <!-- ── Persistent disclaimer bar ──────────────────────────────────────── -->
+  <footer class="disclaimer-bar" role="contentinfo">
+    <svg viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="8" x2="12" y2="12"/>
+      <line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+    <p>
+      <strong>Not legal advice.</strong>
+      SynJuris is an organizational and drafting tool, not a law firm.
+      Pattern flags are research starting points only. Consult a licensed attorney
+      before filing any document or making legal decisions.
+    </p>
+  </footer>
+
+</div><!-- /shell -->
+
+
+<script>
+/* ══ State ══════════════════════════════════════════════════════════════════ */
+const state = {
+  caseType: null,
+  step: 1
+};
+
+/* ══ Case type context map
+   UPL note: labels are research categories, not legal findings
+   ══════════════════════════════════════════════════════════════════════════ */
+const CASE_CONTEXT = {
+  custody: {
+    categories: ['Gatekeeping', 'Parenting Time', 'Communication', 'Violations', 'Child Welfare'],
+    amendments: ['14th Amendment', '1st Amendment'],
+    templates:  ['Parenting Plan', 'Motion to Enforce', 'Incident Log', 'Communication Log'],
+    deadlines:  ['Response deadline', 'Hearing date', 'Mediation date']
+  },
+  divorce: {
+    categories: ['Financial', 'Asset Division', 'Support', 'Communication', 'Property'],
+    amendments: ['14th Amendment', '5th Amendment'],
+    templates:  ['Financial Affidavit', 'Asset Inventory', 'Support Calculation', 'Settlement Proposal'],
+    deadlines:  ['Discovery deadline', 'Filing deadline', 'Hearing date']
+  },
+  domestic_violence: {
+    categories: ['Threats', 'Harassment', 'Physical', 'Stalking', 'Coercive Control'],
+    amendments: ['14th Amendment', '4th Amendment', '1st Amendment'],
+    templates:  ['Incident Report', 'TRO Declaration', 'Safety Plan Log', 'Witness Statement'],
+    deadlines:  ['TRO hearing', 'Evidence submission', 'Service deadline']
+  },
+  civil_rights: {
+    categories: ['Rights Violation', 'Due Process', 'Discrimination', 'Retaliation', 'Documentation'],
+    amendments: ['1st Amendment', '4th Amendment', '14th Amendment'],
+    templates:  ['Complaint Draft', 'Incident Timeline', 'Damages Log', 'Demand Letter'],
+    deadlines:  ['Statute of limitations', 'Filing deadline', 'Response deadline']
+  }
+};
+
+/* ══ Pattern detection (client-side, UPL-safe labels)
+   These are research flags — explicitly not legal conclusions
+   ══════════════════════════════════════════════════════════════════════════ */
+const PATTERNS = [
+  {
+    label: 'Possible access / gatekeeping issue',
+    note: 'May relate to parenting time or contact interference. Research: 14th Amendment due process — verify with an attorney.',
+    weight: 'strong',
+    re: /won'?t\s+let|denied?\s+(visit|access|time|pickup|drop.?off)|prevent(ing|ed)?\s+(me|him|her)\s+(from\s+)?(see|visit|contact)|cancel+ed?\s+the\s+(visit|exchange)|(block(ed|ing)?|withhold(ing|ed)?)\s+(access|contact|the\s+child)/i
+  },
+  {
+    label: 'Possible communication interference',
+    note: 'May relate to stonewalling or blocked contact patterns. Research: court order compliance — verify with an attorney.',
+    weight: 'likely',
+    re: /won'?t\s+respond|not\s+responding|(never|doesn'?t|won'?t)\s+(respond|reply|answer|return)\s+(my\s+)?(call|text|message)s?|block(ed|s|ing)?\s+(my\s+)?(number|calls?|texts?)|left\s+(me\s+)?on\s+(read|seen)/i
+  },
+  {
+    label: 'Possible threatening language',
+    note: 'May relate to threats or intimidation. Research: criminal statutes, protective order eligibility — verify with an attorney.',
+    weight: 'strong',
+    re: /(take|taking|gonna\s+take)\s+(you|this)\s+to\s+court|you'?ll\s+(never|not)\s+see\s+(him|her|them|the\s+kids?)|(call|going\s+to\s+call)\s+(the\s+)?(police|cops?|cps)|(file|going\s+to\s+file)\s+a\s+(restraining|protective)\s+order/i
+  },
+  {
+    label: 'Possible harassment pattern',
+    note: 'Repeated unwanted contact may be relevant to protective order research. Verify with an attorney.',
+    weight: 'likely',
+    re: /show(ed|ing|s)?\s+up\s+(uninvited|unannounced|at\s+my\s+(house|work|job|school))|(follow(ed|ing|s)|stalking|spying\s+on)\s+me|(blowing\s+up|flooding)\s+my\s+(phone|inbox)/i
+  },
+  {
+    label: 'Possible court order compliance issue',
+    note: 'May relate to order enforcement or contempt. Research: contempt procedures in your jurisdiction — verify with an attorney.',
+    weight: 'strong',
+    re: /violat(e|ed|es|ing|ion)\s+(the\s+)?(court\s+order|parenting\s+plan)|in\s+contempt|breaking\s+the\s+(court\s+order|parenting\s+plan)/i
+  },
+  {
+    label: 'Possible financial issue',
+    note: 'May relate to support obligations or asset documentation. Research: support enforcement in your jurisdiction — verify with an attorney.',
+    weight: 'likely',
+    re: /child\s+support|alimony|spousal\s+support|(didn'?t|hasn'?t|won'?t)\s+pay|hiding\s+(income|assets?|money)/i
+  },
+  {
+    label: 'Possible relocation concern',
+    note: 'Moving with children may implicate parenting orders or UCCJEA. Research: relocation statutes — verify with an attorney.',
+    weight: 'strong',
+    re: /(moving|move|relocat\S+)\s+(out\s+of\s+state|to\s+another\s+state)|(taking|took)\s+(him|her|them|the\s+kids?)\s+(out\s+of\s+state)/i
+  },
+  {
+    label: 'Possible child alienation concern',
+    note: 'May relate to parental alienation research. This is a contested area — verify with an attorney before drawing any conclusions.',
+    weight: 'possible',
+    re: /alienat(e|ed|ing|ion)|(turn(ing|ed)|turns)\s+(him|her|them|the\s+kids?)\s+against|(poison(ing|ed)|brainwash(ing|ed))\s+(his|her|their)\s+mind|bad.?mouth(ing|ed)/i
+  }
+];
+
+/* ══ Step navigation ════════════════════════════════════════════════════════ */
+function goStep(n) {
+  const current = document.querySelector('.step-panel.active');
+  if (current) {
+    current.classList.remove('active');
+  }
+
+  // Update nav indicators
+  for (let i = 1; i <= 3; i++) {
+    const nav = document.getElementById(`step-nav-${i}`);
+    const num = document.getElementById(`step-num-${i}`);
+    nav.classList.remove('active', 'done');
+    if (i < n) {
+      nav.classList.add('done');
+      num.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+    } else if (i === n) {
+      nav.classList.add('active');
+      num.textContent = i;
+    } else {
+      num.textContent = i;
+    }
+  }
+
+  const next = document.getElementById(`panel-${n}`);
+  if (next) {
+    next.classList.add('active');
+    state.step = n;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+
+/* ══ Step 1 — Case type selection ═══════════════════════════════════════════ */
+function selectCase(card) {
+  // Deselect all
+  document.querySelectorAll('.case-card').forEach(c => c.classList.remove('selected'));
+  card.classList.add('selected');
+  state.caseType = card.dataset.type;
+
+  // Enable next button
+  const btn = document.getElementById('btn-next-1');
+  btn.removeAttribute('disabled');
+  btn.style.opacity = '1';
+  btn.style.cursor = 'pointer';
+
+  // Show context preview
+  showContextPreview(state.caseType);
+}
+
+function showContextPreview(type) {
+  const ctx = CASE_CONTEXT[type];
+  if (!ctx) return;
+
+  const preview = document.getElementById('context-preview');
+  const tags    = document.getElementById('preview-tags');
+
+  tags.innerHTML = '';
+
+  ctx.categories.forEach(c => tags.insertAdjacentHTML('beforeend',
+    `<span class="tag tag-gold">${c}</span>`));
+  ctx.amendments.forEach(a => tags.insertAdjacentHTML('beforeend',
+    `<span class="tag tag-blue">${a} (research)</span>`));
+  ctx.templates.forEach(t => tags.insertAdjacentHTML('beforeend',
+    `<span class="tag tag-green">${t} template</span>`));
+  ctx.deadlines.forEach(d => tags.insertAdjacentHTML('beforeend',
+    `<span class="tag tag-dim">${d}</span>`));
+
+  preview.classList.add('visible');
+}
+
+/* ══ Step 3 — Pattern detection (debounced, UPL-safe) ══════════════════════ */
+let _patternTimer = null;
+
+function onIncidentInput(el) {
+  // Update char count
+  document.getElementById('char-count').textContent =
+    `${el.value.length} / 2000`;
+
+  clearTimeout(_patternTimer);
+  _patternTimer = setTimeout(() => detectPatterns(el.value), 400);
+}
+
+function detectPatterns(text) {
+  if (text.trim().length < 20) {
+    document.getElementById('pattern-results').classList.remove('visible');
+    document.getElementById('pattern-idle').style.display = 'flex';
+    return;
+  }
+
+  const found = PATTERNS.filter(p => p.re.test(text));
+
+  if (found.length === 0) {
+    document.getElementById('pattern-results').classList.remove('visible');
+    document.getElementById('pattern-idle').style.display = 'flex';
+    return;
+  }
+
+  document.getElementById('pattern-idle').style.display = 'none';
+
+  const list = document.getElementById('pattern-list');
+  list.innerHTML = '';
+
+  found.forEach(f => {
+    const dotClass = f.weight === 'strong' ? 'flag-strong'
+                   : f.weight === 'likely' ? 'flag-likely'
+                   : 'flag-possible';
+    list.insertAdjacentHTML('beforeend', `
+      <div class="pattern-flag">
+        <div class="flag-dot ${dotClass}"></div>
+        <div class="flag-body">
+          <div class="flag-label">${f.label}</div>
+          <div class="flag-note">${f.note}</div>
+        </div>
+      </div>
+    `);
+  });
+
+  document.getElementById('pattern-results').classList.add('visible');
+}
+
+/* ══ Finish — build payload and POST to /api/cases ═════════════════════════ */
+async function finishSetup() {
+  const btn = document.getElementById('btn-finish');
+  btn.classList.add('loading');
+
+  const payload = {
+    title: buildCaseTitle(),
+    case_type: state.caseType,
+    jurisdiction: document.getElementById('jurisdiction').value,
+    court_name:   document.getElementById('court-name').value.trim(),
+    parties: [
+      {
+        name: document.getElementById('p1-name').value.trim(),
+        role: document.getElementById('p1-role').value,
+      },
+      {
+        name: document.getElementById('p2-name').value.trim(),
+        role: document.getElementById('p2-role').value,
+      }
+    ].filter(p => p.name),
+    first_incident: {
+      content:    document.getElementById('incident-text').value.trim(),
+      event_date: document.getElementById('incident-date').value,
+      source:     document.getElementById('incident-source').value.trim(),
+    }
+  };
+
+  try {
+    // Create case
+    const r1 = await fetch('/api/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: payload.title, case_type: payload.case_type,
+                             jurisdiction: payload.jurisdiction,
+                             court_name: payload.court_name })
+    });
+    const caseData = await r1.json();
+    if (caseData.error) throw new Error(caseData.error);
+    const caseId = caseData.id;
+
+    // Add parties
+    for (const p of payload.parties) {
+      await fetch(`/api/cases/${caseId}/parties`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(p)
+      });
+    }
+
+    // Add first incident as evidence (unconfirmed — user reviews before confirming)
+    if (payload.first_incident.content) {
+      await fetch(`/api/cases/${caseId}/evidence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content:    payload.first_incident.content,
+          event_date: payload.first_incident.event_date,
+          source:     payload.first_incident.source,
+          confirmed:  0  // always unconfirmed — user reviews first
+        })
+      });
+    }
+
+    window.location.href = `/?case=${caseId}`;
+
+  } catch (err) {
+    btn.classList.remove('loading');
+    alert('Could not create case: ' + err.message);
+  }
+}
+
+function buildCaseTitle() {
+  const p1 = document.getElementById('p1-name').value.trim();
+  const p2 = document.getElementById('p2-name').value.trim();
+  const typeLabels = {
+    custody: 'Custody',
+    divorce: 'Divorce',
+    domestic_violence: 'Protective Order',
+    civil_rights: 'Civil Matter'
+  };
+  const type = typeLabels[state.caseType] || 'Case';
+  if (p1 && p2) return `${p1} — ${type}`;
+  if (p1) return `${p1} — ${type}`;
+  return `New ${type} — ${new Date().toLocaleDateString()}`;
+}
+
+function skipWizard() {
+  window.location.href = '/';
+}
+
+// Set today as default date
+document.getElementById('incident-date').valueAsDate = new Date();
+</script>
+</body>
+</html>
 
