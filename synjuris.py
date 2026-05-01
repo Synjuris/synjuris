@@ -874,7 +874,7 @@ class SynJurisHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
-        # Root route serving the Modern Brutalist Landing Page
+          # Root route
         if path == "/":
             try:
                 with open("templates/index.html", "rb") as f:
@@ -884,9 +884,10 @@ class SynJurisHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
                 return
             except FileNotFoundError:
-                _json_response(self, {"error": "Landing page template not found"}, 404)
+                _json_response(self, {"error": "Landing page not found"}, 404)
             return
 
+        # THIS IS LINE 950 - Ensure 'elif' is perfectly under 'if'
         elif path == "/health":
             _json_response(self, {"status": "ok", "version": VERSION})
 
@@ -895,6 +896,7 @@ class SynJurisHandler(BaseHTTPRequestHandler):
             rows = [dict(r) for r in conn.execute("SELECT * FROM cases WHERE is_deleted=0 ORDER BY created_at DESC").fetchall()]
             conn.close()
             _json_response(self, {"cases": rows})
+
 
         elif re.match(r"^/api/cases/(\d+)/state$", path):
             case_id = int(re.match(r"^/api/cases/(\d+)/state$", path).group(1))
