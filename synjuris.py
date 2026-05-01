@@ -875,7 +875,7 @@ class SynJurisHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
-           if path == "/":
+          if path == "/":
             try:
                 with open("templates/index.html", "rb") as f:
                     self.send_response(200)
@@ -891,7 +891,7 @@ class SynJurisHandler(BaseHTTPRequestHandler):
         .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 1px solid #333; max-width: 1200px; margin: 4rem auto; }
         .cell { padding: 2rem; border: 1px solid #333; }
         .cell h3 { color: var(--gold); text-transform: uppercase; font-size: 0.9rem; margin-bottom: 1rem; }
-        .cta-section { background: var(--cobalt); color: white; padding: 4rem 2rem; text-align: center; }
+        .cta-section { background: var(--cobalt); color: white; padding:  2rem; text-align: center; }
         .btn { background: white; color: var(--cobalt); padding: 1.5rem 3rem; font-weight: 700; text-decoration: none; display: inline-block; text-transform: uppercase; }
         .price { font-size: 3rem; display: block; margin: 1rem 0; font-family: 'JetBrains Mono'; }
         footer { padding: 2rem; text-align: center; font-size: 0.8rem; color: #444; border-top: 1px solid #333; }
