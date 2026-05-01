@@ -884,8 +884,7 @@ class SynJurisHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
                 return
             except FileNotFoundError:
-                _json_response(self, {"error": "UI template not found"}, 404)
- 2rem; text-align: left; max-width: 1200px; margin: 0 auto; }
+                _json_response(self, {"error": "UI template not found"}, 404) 2rem; text-align: left; max-width: 1200px; margin: 0 auto; }
         h1 { font-size: 5rem; font-weight: 700; margin: 0; text-transform: uppercase; letter-spacing: -2px; }
         .highlight { color: var(--cobalt); }
         .hero-sub { font-size: 1.5rem; margin-top: 1rem; color: #888; max-width: 600px; }
