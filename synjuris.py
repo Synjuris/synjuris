@@ -837,7 +837,6 @@ TEXT TO ANALYZE:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MODULE 11 — HTTP REQUEST HANDLER & ROUTES
-# All routes in one handler class.
 # ══════════════════════════════════════════════════════════════════════════════
 def _json_response(handler, data: dict, status: int = 200):
     body = json.dumps(data, default=str).encode("utf-8")
@@ -874,7 +873,6 @@ class SynJurisHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
-        # Root route serving the Modern Brutalist Landing Page
         if path == "/":
             try:
                 with open("templates/index.html", "rb") as f:
@@ -884,7 +882,7 @@ class SynJurisHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
                 return
             except FileNotFoundError:
-                _json_response(self, {"error": "Landing page template not found"}, 404)
+                _json_response(self, {"error": "UI template not found in /templates"}, 404)
             return
 
         elif path == "/health":
@@ -896,9 +894,48 @@ class SynJurisHandler(BaseHTTPRequestHandler):
             conn.close()
             _json_response(self, {"cases": rows})
 
+        elif re.match(r"^/api/cases/(\d+)$", path):
+            case_id = int(re.match(r"^/api/cases/(\d+)$", path).group(1))
+            conn = get_db()
+            row = conn.execute("SELECT * FROM cases WHERE id=? AND is_deleted=0", (case_id,)).fetchone()
+            if not row:
+                conn.close()
+                return _json_response(self, {"error": "not found"}, 404)
+            case = dict(row)
+            case["parties"]  = [dict(r) for r in conn.execute("SELECT * FROM parties WHERE case_id=?", (case_id,)).fetchall()]
+            case["evidence"] = [dict(r) for r in conn.execute("SELECT * FROM evidence WHERE case_id=? AND is_deleted=0 ORDER BY event_date", (case_id,)).fetchall()]
+            case["deadlines"]= [dict(r) for r in conn.execute("SELECT * FROM deadlines WHERE case_id=? ORDER BY due_date", (case_id,)).fetchall()]
+            conn.close()
+            _json_response(self, case)
+
         elif re.match(r"^/api/cases/(\d+)/state$", path):
             case_id = int(re.match(r"^/api/cases/(\d+)/state$", path).group(1))
             _json_response(self, compute_case_state(case_id))
+
+        elif re.match(r"^/api/cases/(\d+)/readiness$", path):
+            case_id = int(re.match(r"^/api/cases/(\d+)/readiness$", path).group(1))
+            conn = get_db()
+            result = compute_readiness_scores(case_id, conn)
+            conn.close()
+            _json_response(self, result)
+
+        elif re.match(r"^/api/cases/(\d+)/merkle$", path):
+            case_id = int(re.match(r"^/api/cases/(\d+)/merkle$", path).group(1))
+            conn = get_db()
+            root   = get_merkle_root(conn, case_id)
+            verify = verify_dag_chain(conn, case_id)
+            conn.close()
+            _json_response(self, {"root_hash": root, "verification": verify})
+
+        elif re.match(r"^/api/cases/(\d+)/audit$", path):
+            case_id = int(re.match(r"^/api/cases/(\d+)/audit$", path).group(1))
+            conn = get_db()
+            rows = [dict(r) for r in conn.execute("SELECT id, action_type, ai_call_type, created_at FROM audit_log WHERE case_id=? ORDER BY created_at DESC LIMIT 50", (case_id,)).fetchall()]
+            conn.close()
+            _json_response(self, {"audit_log": rows})
+
+        elif path == "/api/jurisdictions":
+            _json_response(self, {"jurisdictions": sorted(JURISDICTION_LAW.keys())})
 
         else:
             _json_response(self, {"error": "Not found", "path": path}, 404)
@@ -909,209 +946,86 @@ class SynJurisHandler(BaseHTTPRequestHandler):
 
         if path == "/api/cases":
             title = body.get("title", "").strip()
-            if not title: 
-                return _json_response(self, {"error": "title required"}, 400)
+            if not title: return _json_response(self, {"error": "title required"}, 400)
             conn = get_db()
-            cur = conn.execute("INSERT INTO cases (title) VALUES (?)", (title,))
+            cur = conn.execute("INSERT INTO cases (title, case_type, jurisdiction, court_name, case_number, goals, notes) VALUES (?,?,?,?,?,?,?)", (title, body.get("case_type"), body.get("jurisdiction"), body.get("court_name"), body.get("case_number"), body.get("goals"), body.get("notes")))
             conn.commit()
             case_id = cur.lastrowid
             conn.close()
             _json_response(self, {"id": case_id, "title": title}, 201)
 
-        elif path == "/api/greyrockfilter":
-            text = body.get("text", "")
-            filtered = apply_grey_rock_filter(text)
-            _json_response(self, {"original": text, "filtered": filtered})
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
-def main():
-    print(f"SYNJURIS MASTER — v{VERSION} — ACTIVE")
-    init_db()
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), SynJurisHandler)
-
-    if LOCAL_MODE:
-        def _open():
-            time.sleep(1)
-            webbrowser.open(f"http://localhost:{PORT}/")
-        threading.Thread(target=_open, daemon=True).start()
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        server.server_close()
-
-if __name__ == "__main__":
-    main()
-
-
-
-
-        # ── Case Management ──────────────────────────────────────────────────
-        if path == "/api/cases":
-            title = body.get("title", "").strip()
-            if not title:
-                return _json_response(self, {"error": "title required"}, 400)
-            conn = get_db()
-            cur = conn.execute(
-                "INSERT INTO cases (title, case_type, jurisdiction, court_name, case_number, goals, notes) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (title, body.get("case_type"), body.get("jurisdiction"),
-                 body.get("court_name"), body.get("case_number"),
-                 body.get("goals"), body.get("notes")),
-            )
-            conn.commit()
-            case_id = cur.lastrowid
-            conn.close()
-            _json_response(self, {"id": case_id, "title": title}, 201)
-
-        # ── Evidence ────────────────────────────────────────────────────────
         elif re.match(r"^/api/cases/(\d+)/evidence$", path):
             case_id = int(re.match(r"^/api/cases/(\d+)/evidence$", path).group(1))
             content = body.get("content", "").strip()
-            if not content:
-                return _json_response(self, {"error": "content required"}, 400)
-
+            if not content: return _json_response(self, {"error": "content required"}, 400)
             conn = get_db()
-            cur = conn.execute(
-                "INSERT INTO evidence (case_id, content, source, event_date, category, confirmed, notes, exhibit_number) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (case_id, content, body.get("source"), body.get("event_date"),
-                 body.get("category", "General"), int(body.get("confirmed", 0)),
-                 body.get("notes"), body.get("exhibit_number")),
-            )
+            cur = conn.execute("INSERT INTO evidence (case_id, content, source, event_date, category, confirmed, notes, exhibit_number) VALUES (?,?,?,?,?,?,?,?)", (case_id, content, body.get("source"), body.get("event_date"), body.get("category", "General"), int(body.get("confirmed", 0)), body.get("notes"), body.get("exhibit_number")))
             conn.commit()
             exhibit_id = cur.lastrowid
-
-            # Auto-detect patterns
-            patterns   = scan_patterns(content)
-            scrutinized= analyze_scrutinized_behavior(content)
-            z_update   = update_case_z_from_exhibit(case_id, content, conn)
-
-            # Add to Merkle DAG
-            exhibit = {"id": exhibit_id, "content": content,
-                       "category": body.get("category", "General"),
-                       "event_date": body.get("event_date"), "source": body.get("source")}
-            merkle_hash = add_exhibit_to_dag(conn, case_id, exhibit)
+            patterns = scan_patterns(content)
+            scrutinized = analyze_scrutinized_behavior(content)
+            z_update = update_case_z_from_exhibit(case_id, content, conn)
+            merkle_hash = add_exhibit_to_dag(conn, case_id, {"id": exhibit_id, "content": content, "category": body.get("category", "General"), "event_date": body.get("event_date"), "source": body.get("source")})
             conn.close()
+            _json_response(self, {"id": exhibit_id, "merkle_hash": merkle_hash, "patterns": patterns, "scrutinized": scrutinized, "z_update": z_update}, 201)
 
-            _json_response(self, {
-                "id":           exhibit_id,
-                "merkle_hash":  merkle_hash,
-                "patterns":     [{"category": p[0], "score": p[1], "severity": p[2]} for p in patterns],
-                "scrutinized":  scrutinized,
-                "z_update":     z_update,
-            }, 201)
-
-        # ── AI Analysis ─────────────────────────────────────────────────────
         elif path == "/api/ai/analyze":
             text = body.get("text", "")
-            if not text:
-                return _json_response(self, {"error": "text required"}, 400)
+            if not text: return _json_response(self, {"error": "text required"}, 400)
             result = analyze_text_safe(text)
             _json_response(self, result)
 
         elif re.match(r"^/api/cases/(\d+)/chat$", path):
             case_id = int(re.match(r"^/api/cases/(\d+)/chat$", path).group(1))
             message = body.get("message", "").strip()
-            if not message:
-                return _json_response(self, {"error": "message required"}, 400)
-
+            if not message: return _json_response(self, {"error": "message required"}, 400)
             conn = get_db()
-            # Build context from recent chat history
-            history = [dict(r) for r in conn.execute(
-                "SELECT role, content FROM chat_history WHERE case_id=? ORDER BY created_at DESC LIMIT 10",
-                (case_id,)
-            ).fetchall()]
+            history = [dict(r) for r in conn.execute("SELECT role, content FROM chat_history WHERE case_id=? ORDER BY created_at DESC LIMIT 4", (case_id,)).fetchall()]
             history.reverse()
-
             case_state = compute_case_state(case_id, conn)
-            state_ctx  = json.dumps(case_state["state"])
-
-            prompt = f"""Case state: {state_ctx}
-Previous messages: {json.dumps(history[-4:]) if history else '[]'}
-User question: {message}"""
-
+            prompt = f"Case state: {json.dumps(case_state['state'])}\nHistory: {json.dumps(history)}\nQuestion: {message}"
             result = safe_generate_with_defense(prompt, llm_call)
-
-            # Persist exchange
-            conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
-                         (case_id, "user", message))
-            conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
-                         (case_id, "assistant", result["content"]))
+            conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)", (case_id, "user", message))
+            conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)", (case_id, "assistant", result["content"]))
             conn.commit()
             conn.close()
             _json_response(self, result)
 
-        # ── Scoring ─────────────────────────────────────────────────────────
         elif path == "/api/score":
             text = body.get("text", "")
             audit = upl_score_text(text)
             patterns = scan_patterns(text)
             scrutinized = analyze_scrutinized_behavior(text)
-            _json_response(self, {
-                "upl_audit":    audit,
-                "patterns":     [{"category": p[0], "score": p[1], "severity": p[2]} for p in patterns],
-                "scrutinized":  scrutinized,
-                "z_pressure_delta": compute_scrutinized_z_delta(text),
-            })
+            _json_response(self, {"upl_audit": audit, "patterns": patterns, "scrutinized": scrutinized, "z_pressure_delta": compute_scrutinized_z_delta(text)})
 
-        # ── Grey Rock Filter ─────────────────────────────────────────────────
         elif path == "/api/greyrockfilter":
             text = body.get("text", "")
             filtered = apply_grey_rock_filter(text)
-            _json_response(self, {"original": text, "filtered": filtered,
-                                   "blocked": guardrail_detect_block(text)})
+            _json_response(self, {"original": text, "filtered": filtered, "blocked": guardrail_detect_block(text)})
 
-        # ── Deadlines ────────────────────────────────────────────────────────
         elif re.match(r"^/api/cases/(\d+)/deadlines$", path):
             case_id = int(re.match(r"^/api/cases/(\d+)/deadlines$", path).group(1))
             title = body.get("title", "").strip()
-            if not title:
-                return _json_response(self, {"error": "title required"}, 400)
             conn = get_db()
-            cur = conn.execute(
-                "INSERT INTO deadlines (case_id, title, due_date, description) VALUES (?,?,?,?)",
-                (case_id, title, body.get("due_date"), body.get("description")),
-            )
+            cur = conn.execute("INSERT INTO deadlines (case_id, title, due_date, description) VALUES (?,?,?,?)", (case_id, title, body.get("due_date"), body.get("description")))
             conn.commit()
             conn.close()
             _json_response(self, {"id": cur.lastrowid}, 201)
 
-        # ── Document Generation ──────────────────────────────────────────────
         elif path == "/api/docs":
-            text     = body.get("text", "")
+            text = body.get("text", "")
             doc_type = body.get("doc_type", "Legal Document")
-            case_id  = body.get("case_id")
-
-            prompt = f"""Generate a professional {doc_type}.
-Do not give legal advice. Present facts only.
-
-CONTENT:
-{text}"""
-            result   = safe_generate_with_defense(prompt, llm_call)
-            doc_text = result["content"]
-
+            case_id = body.get("case_id")
+            prompt = f"Generate a professional {doc_type}. Present facts only.\nCONTENT: {text}"
+            result = safe_generate_with_defense(prompt, llm_call)
             conn = get_db()
-            cur = None
-            if case_id:
-                cur = conn.execute(
-                    "INSERT INTO documents (case_id, title, doc_type, content) VALUES (?,?,?,?)",
-                    (case_id, doc_type, doc_type, doc_text),
-                )
-                conn.commit()
+            cur = conn.execute("INSERT INTO documents (case_id, title, doc_type, content) VALUES (?,?,?,?)", (case_id, doc_type, doc_type, result["content"]))
+            conn.commit()
             conn.close()
-
-            _json_response(self, {
-                "document": doc_text,
-                "doc_id":   cur.lastrowid if cur else None,
-                "audit":    result["audit"],
-            })
+            _json_response(self, {"document": result["content"], "doc_id": cur.lastrowid, "audit": result["audit"]})
 
         else:
             _json_response(self, {"error": "Not found", "path": path}, 404)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
@@ -1125,26 +1039,9 @@ def main():
   DB Path    : {DB_PATH}
   Uploads    : {UPLOADS_DIR}
   Port       : {PORT}
-  AI Backend : {'Anthropic ✓' if API_KEY else ('OpenAI ✓' if OPENAI_KEY else 'None — set ANTHROPIC_API_KEY')}
+  AI Backend : {'Anthropic ✓' if API_KEY else ('OpenAI ✓' if OPENAI_KEY else 'None')}
 
-  Endpoints:
-    GET  /health
-    GET  /api/cases
-    POST /api/cases
-    GET  /api/cases/:id
-    GET  /api/cases/:id/state         (x/y/z dynamics)
-    GET  /api/cases/:id/readiness
-    GET  /api/cases/:id/merkle        (DAG integrity)
-    GET  /api/cases/:id/audit
-    POST /api/cases/:id/evidence      (auto-pattern + DAG)
-    POST /api/cases/:id/chat          (safe AI chat)
-    POST /api/cases/:id/deadlines
-    POST /api/ai/analyze              (UPL-safe analysis)
-    POST /api/score                   (UPL + pattern score)
-    POST /api/greyrockfilter          (Grey Rock filter)
-    POST /api/docs                    (document generation)
-    GET  /api/jurisdictions
-    GET  /api/jurisdictions/:state
+  Endpoints Loaded: GET /health, /api/cases, /api/jurisdictions, POST /api/cases, /api/ai/analyze, etc.
 """)
 
     init_db()
@@ -1162,7 +1059,6 @@ def main():
     except KeyboardInterrupt:
         print("\n  Shutting down.")
         server.server_close()
-
 
 if __name__ == "__main__":
     main()
