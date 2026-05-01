@@ -835,7 +835,6 @@ TEXT TO ANALYZE:
 {text}"""
     return safe_generate_with_defense(prompt, llm_call)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # MODULE 11 — HTTP REQUEST HANDLER & ROUTES
 # All routes in one handler class.
@@ -875,7 +874,8 @@ class SynJurisHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
-          if path == "/":
+        # Root route serving the Modern Brutalist Landing Page
+        if path == "/":
             try:
                 with open("templates/index.html", "rb") as f:
                     self.send_response(200)
@@ -884,127 +884,21 @@ class SynJurisHandler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
                 return
             except FileNotFoundError:
-                _json_response(self, {"error": "UI template not found"}, 404) 2rem; text-align: left; max-width: 1200px; margin: 0 auto; }
-        h1 { font-size: 5rem; font-weight: 700; margin: 0; text-transform: uppercase; letter-spacing: -2px; }
-        .highlight { color: var(--cobalt); }
-        .hero-sub { font-size: 1.5rem; margin-top: 1rem; color: #888; max-width: 600px; }
-        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 1px solid #333; max-width: 1200px; margin: 4rem auto; }
-        .cell { padding: 2rem; border: 1px solid #333; }
-        .cell h3 { color: var(--gold); text-transform: uppercase; font-size: 0.9rem; margin-bottom: 1rem; }
-        .cta-section { background: var(--cobalt); color: white; padding:  2rem; text-align: center; }
-        .btn { background: white; color: var(--cobalt); padding: 1.5rem 3rem; font-weight: 700; text-decoration: none; display: inline-block; text-transform: uppercase; }
-        .price { font-size: 3rem; display: block; margin: 1rem 0; font-family: 'JetBrains Mono'; }
-        footer { padding: 2rem; text-align: center; font-size: 0.8rem; color: #444; border-top: 1px solid #333; }
-    </style>
-</head>
-<body>
-    <header>
-        <div class="mono highlight">v3.0.0-MASTER // LOCAL_BUILD</div>
-        <h1>Syn<span class="highlight">Juris</span></h1>
-        <p class="hero-sub">The court system is a machine. Stop fighting it with emotion. Start navigating it with data.</p>
-    </header>
-
-    <section class="grid">
-        <div class="cell">
-            <h3>01 / Deterministic Logic</h3>
-            <p>Our <strong>9&sup3; Protocol</strong> transforms chaotic case details into a three-axis vector (x, y, z). Know your standing before you file.</p>
-        </div>
-        <div class="cell">
-            <h3>02 / Gray Rock Guardrails</h3>
-            <p>Integrated filters strip high-conflict markers from your communication, ensuring every message is &ldquo;Court-Ready&rdquo; and neutral.</p>
-        </div>
-        <div class="cell">
-            <h3>03 / Merkle Integrity</h3>
-            <p>Every exhibit is hashed into a Merkle DAG Ledger. Evidence integrity is not an option; it&rsquo;s a cryptographic guarantee.</p>
-        </div>
-    </section>
-
-    <section class="cta-section">
-        <h2>FOUNDATIONAL BINARY</h2>
-        <p>Full Local-First License. No Cloud Dependency. Your Data Stays Yours.</p>
-        <span class="price">$49.00</span>
-        <p><em>Strictly limited to the first 100 licensees.</em></p>
-        <a href="#" class="btn">Secure the Advantage</a>
-    </section>
-
-    <footer>
-        SYNJURIS &copy; 2026 // CASE_INTEL_SYSTEM // JACKSON_TN_NODE
-    </footer>
-</body>
-</html>"""
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", len(html))
-            self.end_headers()
-            self.wfile.write(html)
+                _json_response(self, {"error": "Landing page template not found"}, 404)
+            return
 
         elif path == "/health":
             _json_response(self, {"status": "ok", "version": VERSION})
 
-        elif path == "/api/version":
-            _json_response(self, {"version": VERSION, "db": DB_PATH})
-
         elif path == "/api/cases":
             conn = get_db()
-            rows = [dict(r) for r in conn.execute(
-                "SELECT * FROM cases WHERE is_deleted=0 ORDER BY created_at DESC"
-            ).fetchall()]
+            rows = [dict(r) for r in conn.execute("SELECT * FROM cases WHERE is_deleted=0 ORDER BY created_at DESC").fetchall()]
             conn.close()
             _json_response(self, {"cases": rows})
-
-        elif re.match(r"^/api/cases/(\d+)$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)$", path).group(1))
-            conn = get_db()
-            row = conn.execute("SELECT * FROM cases WHERE id=? AND is_deleted=0", (case_id,)).fetchone()
-            if not row:
-                conn.close()
-                return _json_response(self, {"error": "not found"}, 404)
-            case = dict(row)
-            case["parties"]  = [dict(r) for r in conn.execute("SELECT * FROM parties WHERE case_id=?", (case_id,)).fetchall()]
-            case["evidence"] = [dict(r) for r in conn.execute("SELECT * FROM evidence WHERE case_id=? AND is_deleted=0 ORDER BY event_date", (case_id,)).fetchall()]
-            case["deadlines"]= [dict(r) for r in conn.execute("SELECT * FROM deadlines WHERE case_id=? ORDER BY due_date", (case_id,)).fetchall()]
-            conn.close()
-            _json_response(self, case)
 
         elif re.match(r"^/api/cases/(\d+)/state$", path):
             case_id = int(re.match(r"^/api/cases/(\d+)/state$", path).group(1))
             _json_response(self, compute_case_state(case_id))
-
-        elif re.match(r"^/api/cases/(\d+)/readiness$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/readiness$", path).group(1))
-            conn = get_db()
-            result = compute_readiness_scores(case_id, conn)
-            conn.close()
-            _json_response(self, result)
-
-        elif re.match(r"^/api/cases/(\d+)/merkle$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/merkle$", path).group(1))
-            conn = get_db()
-            root   = get_merkle_root(conn, case_id)
-            verify = verify_dag_chain(conn, case_id)
-            conn.close()
-            _json_response(self, {"root_hash": root, "verification": verify})
-
-        elif re.match(r"^/api/cases/(\d+)/audit$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/audit$", path).group(1))
-            conn = get_db()
-            rows = [dict(r) for r in conn.execute(
-                "SELECT id, action_type, ai_call_type, state_x, state_y, state_z, trace_hash, created_at "
-                "FROM audit_log WHERE case_id=? ORDER BY created_at DESC LIMIT 50", (case_id,)
-            ).fetchall()]
-            conn.close()
-            _json_response(self, {"audit_log": rows})
-
-        elif path == "/api/jurisdictions":
-            _json_response(self, {"jurisdictions": sorted(JURISDICTION_LAW.keys())})
-
-        elif re.match(r"^/api/jurisdictions/(.+)$", path):
-            raw = re.match(r"^/api/jurisdictions/(.+)$", path).group(1)
-            canonical, laws = resolve_jurisdiction(urllib.parse.unquote(raw))
-            if laws:
-                _json_response(self, {"jurisdiction": canonical, "statutes": laws})
-            else:
-                _json_response(self, {"error": f"Jurisdiction '{raw}' not found"}, 404)
 
         else:
             _json_response(self, {"error": "Not found", "path": path}, 404)
@@ -1012,6 +906,45 @@ class SynJurisHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/")
         body = _read_body(self)
+
+        if path == "/api/cases":
+            title = body.get("title", "").strip()
+            if not title: return _json_response(self, {"error": "title required"}, 400)
+            conn = get_db()
+            cur = conn.execute("INSERT INTO cases (title) VALUES (?)", (title,))
+            conn.commit()
+            case_id = cur.lastrowid
+            conn.close()
+            _json_response(self, {"id": case_id, "title": title}, 201)
+
+        elif path == "/api/greyrockfilter":
+            text = body.get("text", "")
+            filtered = apply_grey_rock_filter(text)
+            _json_response(self, {"original": text, "filtered": filtered})
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════════════
+def main():
+    print(f"SYNJURIS MASTER — v{VERSION} — ACTIVE")
+    init_db()
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), SynJurisHandler)
+
+    if LOCAL_MODE:
+        def _open():
+            time.sleep(1)
+            webbrowser.open(f"http://localhost:{PORT}/")
+        threading.Thread(target=_open, daemon=True).start()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.server_close()
+
+if __name__ == "__main__":
+    main()
+
+
 
         # ── Case Management ──────────────────────────────────────────────────
         if path == "/api/cases":
