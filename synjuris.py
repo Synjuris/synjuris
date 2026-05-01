@@ -31,27 +31,13 @@ Environment variables (all optional):
 # IMPORTS
 # ══════════════════════════════════════════════════════════════════════════════
 import sqlite3, json, os, re, hashlib, hmac, time, uuid, math, sys, queue
-import threading, webbrowser, urllib.request, urllib.parse, secrets, io
+import threading, webbrowser, urllib.request, urllib.parse
 from datetime import datetime, date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from typing import Optional, Callable
-
-# ── Optional: reportlab for proof PDF export ─────────────────────────────
-try:
-    from reportlab.lib.pagesizes  import letter
-    from reportlab.lib.units       import inch
-    from reportlab.lib.colors      import HexColor, black, white
-    from reportlab.platypus        import (SimpleDocTemplate, Paragraph,
-                                           Spacer, Table, TableStyle,
-                                           KeepTogether)
-    from reportlab.lib.styles      import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums       import TA_LEFT
-    HAS_REPORTLAB = True
-except ImportError:
-    HAS_REPORTLAB = False
 
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -63,49 +49,6 @@ UPLOADS_DIR  = os.environ.get("SYNJURIS_UPLOADS", "uploads")
 API_KEY      = os.environ.get("ANTHROPIC_API_KEY", "")
 OPENAI_KEY   = os.environ.get("OPENAI_API_KEY", "")
 LOCAL_MODE   = os.environ.get("SYNJURIS_LOCAL", "1") == "1"
-
-# ── Static file serving ───────────────────────────────────────────────────
-_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR  = os.path.join(_MODULE_DIR, "static")
-MIME_TYPES  = {
-    ".html": "text/html; charset=utf-8",
-    ".css":  "text/css",
-    ".js":   "application/javascript",
-    ".ico":  "image/x-icon",
-    ".png":  "image/png",
-    ".svg":  "image/svg+xml",
-    ".woff2":"font/woff2",
-}
-
-# ── Disclaimer constants ──────────────────────────────────────────────────
-DISCLAIMER_VERSION = 1
-DISCLAIMER_TEXT = (
-    "SynJuris is an organizational and document drafting tool. "
-    "It is not a law firm and does not provide legal advice.\n\n"
-    "By continuing, you acknowledge:\n"
-    "1. Nothing in SynJuris constitutes legal advice or creates "
-    "an attorney-client relationship.\n"
-    "2. All AI-generated content is a draft starting point only. "
-    "Review all documents with a licensed attorney before filing.\n"
-    "3. Pattern detection flags are research indicators only — "
-    "not legal findings or conclusions.\n"
-    "4. SynJuris makes no representations about case outcomes."
-)
-DISCLAIMER_HASH = hashlib.sha256(DISCLAIMER_TEXT.encode()).hexdigest()[:16]
-
-# ── CSP policy ────────────────────────────────────────────────────────────
-_CSP_POLICY = (
-    "default-src \'self\'; "
-    "script-src \'self\' \'unsafe-inline\'; "
-    "style-src \'self\' \'unsafe-inline\' https://fonts.googleapis.com; "
-    "font-src https://fonts.gstatic.com; "
-    "img-src \'self\' data:; "
-    "connect-src \'self\' https://api.anthropic.com https://api.openai.com "
-        "https://www.courtlistener.com; "
-    "frame-ancestors \'none\'; "
-    "base-uri \'self\'; "
-    "form-action \'self\'"
-)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MODULE 1 — UPL AUDITOR
@@ -814,33 +757,6 @@ def init_db():
     );
     """)
     conn.commit()
-
-    # ── v2 additions: disclaimer ack + portal tokens ──────────────────────
-    conn.executescript("""
-    CREATE TABLE IF NOT EXISTS disclaimer_acks (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id         INTEGER NOT NULL,
-        version         INTEGER NOT NULL,
-        disclaimer_hash TEXT    NOT NULL,
-        acked_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
-        ip_hint         TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_disclaimer_user
-        ON disclaimer_acks(user_id, version);
-
-    CREATE TABLE IF NOT EXISTS portal_tokens (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        case_id     INTEGER NOT NULL UNIQUE,
-        token       TEXT    NOT NULL UNIQUE,
-        created_by  INTEGER,
-        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-        last_viewed DATETIME,
-        view_count  INTEGER DEFAULT 0,
-        revoked     INTEGER DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_portal_token ON portal_tokens(token);
-    """)
-    conn.commit()
     conn.close()
     os.makedirs(UPLOADS_DIR, exist_ok=True)
 
@@ -921,363 +837,6 @@ TEXT TO ANALYZE:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODULE 11a — STATIC FILES, DISCLAIMER, PORTAL, PROOF PDF HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _read_static(filename: str) -> str:
-    """Read file from static/ dir. Returns empty string if missing."""
-    p = os.path.join(STATIC_DIR, os.path.basename(filename))
-    if os.path.isfile(p):
-        with open(p, "r", encoding="utf-8") as f:
-            return f.read()
-    return f"<html><body style=\"background:#0a1520;color:#a0b0c0;font-family:sans-serif;padding:40px\">Missing static file: {filename}</body></html>"
-
-def _serve_static_file(handler, filename: str) -> bool:
-    """Serve a file from static/. Returns True if found."""
-    safe = os.path.basename(filename)
-    fp   = os.path.join(STATIC_DIR, safe)
-    if not os.path.isfile(fp):
-        return False
-    ext      = os.path.splitext(safe)[1].lower()
-    mimetype = MIME_TYPES.get(ext, "application/octet-stream")
-    with open(fp, "rb") as f:
-        data = f.read()
-    handler.send_response(200)
-    handler.send_header("Content-Type", mimetype)
-    handler.send_header("Content-Length", str(len(data)))
-    handler.send_header("Cache-Control", "no-cache")
-    handler.end_headers()
-    handler.wfile.write(data)
-    return True
-
-def _send_html(handler, html: str):
-    data = html.encode("utf-8")
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
-
-# ── Disclaimer helpers ────────────────────────────────────────────────────
-def _needs_disclaimer(case_id: int) -> bool:
-    """
-    In this API-first build, disclaimer is shown via the frontend modal.
-    This function checks the DB for local-mode single-user setups.
-    """
-    conn = get_db()
-    row  = conn.execute(
-        "SELECT id FROM disclaimer_acks WHERE version=? AND disclaimer_hash=? LIMIT 1",
-        (DISCLAIMER_VERSION, DISCLAIMER_HASH)
-    ).fetchone()
-    conn.close()
-    return row is None
-
-def _record_disclaimer_ack(ip_hint: str = None):
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO disclaimer_acks (user_id, version, disclaimer_hash, ip_hint) "
-        "VALUES (?,?,?,?)",
-        (1, DISCLAIMER_VERSION, DISCLAIMER_HASH, ip_hint)
-    )
-    conn.commit()
-    conn.close()
-
-def _get_disclaimer_modal() -> str:
-    return f"""<div id="sj-disclaimer-overlay" style="position:fixed;inset:0;background:rgba(10,21,32,0.93);display:flex;align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(4px);font-family:\'Outfit\',sans-serif">
-<div style="background:#111d2b;border:1px solid rgba(201,168,76,0.35);border-radius:12px;padding:36px 40px;max-width:520px;width:90%;box-shadow:0 32px 80px rgba(0,0,0,0.6)">
-<div style="font-family:\'Cormorant Garamond\',serif;font-size:22px;color:#e8dfc8;margin-bottom:16px">Before you continue</div>
-<div style="background:#0a1520;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:16px;margin-bottom:18px;max-height:200px;overflow-y:auto;font-size:12px;color:#a0b0c0;line-height:1.7;white-space:pre-wrap">{DISCLAIMER_TEXT}</div>
-<label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin-bottom:18px">
-<input type="checkbox" id="sj-disc-check" onchange="document.getElementById(\'sj-disc-btn\').style.opacity=this.checked?\'1\':\'0.4\'" style="margin-top:3px;accent-color:#c9a84c">
-<span style="font-size:12.5px;color:#a0b0c0;line-height:1.6">I understand SynJuris is not a law firm, does not provide legal advice, and all content is for organizational purposes only.</span>
-</label>
-<div style="display:flex;gap:10px">
-<button onclick="window.location.href=\'/?bye=1\'" style="flex:1;background:transparent;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:11px;font-family:\'Outfit\',sans-serif;font-size:13px;color:#506070;cursor:pointer">Exit</button>
-<button id="sj-disc-btn" onclick="sjAcceptDisclaimer()" style="flex:2;background:#c9a84c;border:none;border-radius:8px;padding:11px;font-family:\'Outfit\',sans-serif;font-size:13px;font-weight:600;color:#0a1520;cursor:pointer;opacity:0.4;transition:opacity 0.2s">I Understand — Continue</button>
-</div>
-<div style="margin-top:12px;font-size:10px;color:#506070;text-align:center;font-style:italic">v{DISCLAIMER_VERSION} · {DISCLAIMER_HASH} · Acknowledgment logged with timestamp</div>
-</div></div>
-<script>
-async function sjAcceptDisclaimer(){{
-  if(!document.getElementById(\'sj-disc-check\').checked)return;
-  await fetch(\'/api/disclaimer/ack\',{{method:\'POST\'}}).catch(()=>{{}});
-  const el=document.getElementById(\'sj-disclaimer-overlay\');
-  el.style.transition=\'opacity 0.3s\';el.style.opacity=\'0\';
-  setTimeout(()=>el.remove(),300);
-}}
-</script>"""
-
-# ── Portal helpers ────────────────────────────────────────────────────────
-def _generate_portal_token(case_id: int) -> str:
-    conn = get_db()
-    row  = conn.execute(
-        "SELECT token FROM portal_tokens WHERE case_id=? AND revoked=0",
-        (case_id,)
-    ).fetchone()
-    if row:
-        conn.close()
-        return row[0]
-    token = secrets.token_urlsafe(24)
-    conn.execute(
-        "INSERT INTO portal_tokens (case_id, token, created_by) VALUES (?,?,?)",
-        (case_id, token, 1)
-    )
-    conn.commit()
-    conn.close()
-    return token
-
-def _render_portal(case_id: int, token: str) -> str:
-    conn = get_db()
-    pt = conn.execute(
-        "SELECT case_id, revoked FROM portal_tokens WHERE token=?", (token,)
-    ).fetchone()
-    if not pt or pt[1]:
-        conn.close()
-        return "<html><body style='background:#0a1520;color:#506070;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh'><div style='text-align:center'><div style='font-size:32px;margin-bottom:12px'>404</div><div>This portal link is invalid or has been revoked.</div></div></body></html>"
-
-    conn.execute("UPDATE portal_tokens SET last_viewed=CURRENT_TIMESTAMP, view_count=view_count+1 WHERE token=?", (token,))
-    conn.commit()
-
-    case     = dict(conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone() or {})
-    exhibits = [dict(r) for r in conn.execute(
-        "SELECT exhibit_number, event_date, category, substr(content,1,120) as summary "
-        "FROM evidence WHERE case_id=? AND confirmed=1 AND (is_deleted IS NULL OR is_deleted=0) "
-        "ORDER BY event_date ASC", (case_id,)
-    ).fetchall()]
-    deadlines = [dict(r) for r in conn.execute(
-        "SELECT due_date, title, completed FROM deadlines WHERE case_id=? ORDER BY due_date ASC LIMIT 10",
-        (case_id,)
-    ).fetchall()]
-    parties = [dict(r) for r in conn.execute(
-        "SELECT name, role FROM parties WHERE case_id=?", (case_id,)
-    ).fetchall()]
-    conn.close()
-
-    def esc(s): return str(s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
-
-    type_labels = {"custody":"Custody / Parenting","divorce":"Divorce / Separation",
-                   "domestic_violence":"Protective Order","civil_rights":"Civil Matter"}
-    ct = type_labels.get(case.get("case_type",""), case.get("case_type",""))
-
-    ex_rows = "".join(f"""<tr><td style='font-family:monospace;font-size:11px;color:#c9a84c;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.06)'>{esc(e['exhibit_number'])}</td>
-<td style='font-size:11px;color:#506070;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.06);white-space:nowrap'>{esc(e['event_date'])}</td>
-<td style='font-size:12px;color:#a0b0c0;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.06)'>{esc(e['summary'])}{'…' if len(e.get('summary',''))>=120 else ''}</td>
-<td style='font-size:11px;color:#506070;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.06)'>{esc(e['category'])} <span style='opacity:0.6;font-style:italic'>(research indicator)</span></td></tr>""" for e in exhibits) or "<tr><td colspan='4' style='padding:12px;color:#506070;font-size:12px'>No confirmed exhibits.</td></tr>"
-
-    dl_rows = "".join(f"""<div style='display:grid;grid-template-columns:110px 1fr 80px;gap:12px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,0.06);font-size:12px'>
-<span style='font-family:monospace;font-size:11px;color:#506070'>{esc(d['due_date'])}</span>
-<span style='color:#a0b0c0'>{esc(d['title'])}</span>
-<span style='text-align:right;color:{"#4caf82" if d["completed"] else "#d4924a"}'>{"Complete" if d["completed"] else "Open"}</span></div>""" for d in deadlines) or "<div style='padding:12px;color:#506070;font-size:12px'>No deadlines.</div>"
-
-    party_chips = "".join(f"""<div style='display:flex;align-items:center;gap:8px;background:#111d2b;border:1px solid rgba(255,255,255,0.07);border-radius:6px;padding:8px 14px'>
-<span style='font-size:9.5px;font-weight:500;letter-spacing:0.1em;text-transform:uppercase;color:#506070'>{esc(p['role'])}</span>
-<span style='font-size:13px;color:#e8dfc8'>{esc(p['name'])}</span></div>""" for p in parties)
-
-    return f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SynJuris — Case Summary (Read Only)</title>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&family=Outfit:wght@300;400;500&display=swap" rel="stylesheet">
-<style>*{{box-sizing:border-box;margin:0;padding:0}}body{{background:#0a1520;color:#e8dfc8;font-family:\'Outfit\',sans-serif;font-weight:300;min-height:100vh}}</style>
-</head><body>
-<div style="background:#0d1825;border-bottom:1px solid rgba(255,255,255,0.07);padding:14px 32px;display:flex;align-items:center;justify-content:space-between">
-<div style="font-family:\'Cormorant Garamond\',serif;font-size:16px;letter-spacing:0.14em;color:#c9a84c;text-transform:uppercase">SynJuris</div>
-<div style="font-size:10.5px;font-weight:500;letter-spacing:0.1em;text-transform:uppercase;color:#506070;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:4px;padding:3px 10px">Read-only case summary</div></div>
-<div style="background:rgba(212,146,74,0.08);border-bottom:1px solid rgba(212,146,74,0.18);padding:10px 32px;font-size:11.5px;color:#d4924a;line-height:1.5">
-<strong>Not legal advice.</strong> This is a read-only organizational summary. Pattern flags are research indicators only — not legal findings. Consult a licensed attorney.</div>
-<div style="max-width:860px;margin:0 auto;padding:40px 24px">
-<h1 style="font-family:\'Cormorant Garamond\',serif;font-size:32px;font-weight:300;margin-bottom:12px">{esc(case.get("title",""))}</h1>
-<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">
-{"<span style='font-size:11px;padding:3px 10px;border-radius:4px;background:rgba(201,168,76,0.1);border:1px solid rgba(201,168,76,0.2);color:#c9a84c'>"+esc(ct)+"</span>" if ct else ""}
-{"<span style='font-size:11px;padding:3px 10px;border-radius:4px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);color:#506070'>"+esc(case.get("jurisdiction",""))+"</span>" if case.get("jurisdiction") else ""}
-{"<span style='font-size:11px;padding:3px 10px;border-radius:4px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);color:#506070'>Case # "+esc(case.get("case_number",""))+"</span>" if case.get("case_number") else ""}
-</div>
-<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px">{party_chips}</div>
-{"<div style=\"display:flex;align-items:center;gap:10px;background:rgba(212,146,74,0.08);border:1px solid rgba(212,146,74,0.2);border-radius:8px;padding:12px 16px;margin-bottom:24px;font-size:13px;color:#d4924a\">Hearing date on record: <strong>"+esc(case.get("hearing_date",""))+"</strong></div>" if case.get("hearing_date") else ""}
-<div style="font-size:10px;font-weight:500;letter-spacing:0.14em;text-transform:uppercase;color:#506070;margin-bottom:12px">Confirmed Exhibits ({len(exhibits)})</div>
-<table style="width:100%;border-collapse:collapse;background:#111d2b;border:1px solid rgba(255,255,255,0.07);border-radius:8px;overflow:hidden;margin-bottom:28px">
-<thead><tr>
-<th style="text-align:left;font-size:9.5px;font-weight:500;letter-spacing:0.12em;text-transform:uppercase;color:#506070;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.07)">Exhibit</th>
-<th style="text-align:left;font-size:9.5px;font-weight:500;letter-spacing:0.12em;text-transform:uppercase;color:#506070;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.07)">Date</th>
-<th style="text-align:left;font-size:9.5px;font-weight:500;letter-spacing:0.12em;text-transform:uppercase;color:#506070;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.07)">Summary</th>
-<th style="text-align:left;font-size:9.5px;font-weight:500;letter-spacing:0.12em;text-transform:uppercase;color:#506070;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.07)">Research flag</th>
-</tr></thead><tbody>{ex_rows}</tbody></table>
-<div style="font-size:10px;font-weight:500;letter-spacing:0.14em;text-transform:uppercase;color:#506070;margin-bottom:12px">Deadlines</div>
-<div style="background:#111d2b;border:1px solid rgba(255,255,255,0.07);border-radius:8px;overflow:hidden;margin-bottom:28px">{dl_rows}</div>
-</div>
-<footer style="border-top:1px solid rgba(255,255,255,0.07);padding:20px 32px;font-size:11px;color:#506070;line-height:1.7;text-align:center">
-<strong style="color:#d4924a">Not legal advice.</strong> SynJuris is an organizational tool, not a law firm. Generated {datetime.now().strftime("%Y-%m-%d %H:%M UTC")}. Consult a licensed attorney before acting on any information here.</footer>
-</body></html>"""
-
-# ── Proof PDF generator ───────────────────────────────────────────────────
-def _generate_proof_pdf(case_id: int) -> bytes:
-    """Generate Merkle proof PDF. Requires reportlab."""
-    if not HAS_REPORTLAB:
-        raise RuntimeError("reportlab not installed. Run: pip install reportlab")
-
-    conn     = get_db()
-    case     = dict(conn.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone() or {})
-    exhibits = [dict(r) for r in conn.execute(
-        "SELECT id, exhibit_number, content, source, event_date, category, created_at "
-        "FROM evidence WHERE case_id=? AND confirmed=1 AND (is_deleted IS NULL OR is_deleted=0) "
-        "ORDER BY event_date ASC, id ASC", (case_id,)
-    ).fetchall()]
-    conn.close()
-
-    state    = compute_case_state(case_id)
-    chain_hash = state.get("hash", "unavailable")
-    generated  = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
-    title_str  = case.get("title", f"Case {case_id}")
-
-    GOLD  = HexColor("#c9a84c")
-    INK   = HexColor("#0a1520")
-    AMBER = HexColor("#d4924a")
-    GREEN = HexColor("#4caf82")
-    RULE  = HexColor("#d0c8b8")
-    LIGHT = HexColor("#f8f6f0")
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=letter,
-                            leftMargin=0.65*inch, rightMargin=0.65*inch,
-                            topMargin=0.85*inch, bottomMargin=0.75*inch,
-                            title=f"SynJuris Proof — {title_str}")
-
-    styles = getSampleStyleSheet()
-    def S(name, **kw):
-        return ParagraphStyle(name, **kw)
-
-    h1   = S("h1",   fontName="Times-Bold",    fontSize=24, leading=30, textColor=INK, spaceAfter=4)
-    sub  = S("sub",  fontName="Times-Italic",  fontSize=12, leading=16, textColor=GOLD, spaceAfter=18)
-    sec  = S("sec",  fontName="Helvetica-Bold",fontSize=8,  leading=12, textColor=RULE,
-              spaceBefore=16, spaceAfter=6, letterSpacing=1.2)
-    bod  = S("bod",  fontName="Times-Roman",   fontSize=10, leading=15, textColor=INK, spaceAfter=5)
-    mono = S("mono", fontName="Courier",       fontSize=8,  leading=12, textColor=INK, spaceAfter=3)
-    disc = S("disc", fontName="Times-Italic",  fontSize=8.5,leading=13, textColor=AMBER, spaceAfter=4)
-    exn  = S("exn",  fontName="Courier-Bold",  fontSize=9,  leading=13, textColor=GOLD)
-    smol = S("smol", fontName="Times-Roman",   fontSize=9,  leading=14, textColor=INK, spaceAfter=3)
-
-    def on_page(canvas, doc):
-        w, h = letter
-        canvas.saveState()
-        canvas.setStrokeColor(GOLD); canvas.setLineWidth(1.5)
-        canvas.line(0.65*inch, h-0.52*inch, w-0.65*inch, h-0.52*inch)
-        canvas.setFont("Helvetica-Bold", 7); canvas.setFillColor(GOLD)
-        canvas.drawString(0.65*inch, h-0.42*inch, "SYNJURIS")
-        canvas.setFont("Helvetica", 7); canvas.setFillColor(HexColor("#506070"))
-        canvas.drawRightString(w-0.65*inch, h-0.42*inch, title_str[:60])
-        canvas.setStrokeColor(RULE); canvas.setLineWidth(0.5)
-        canvas.line(0.65*inch, 0.55*inch, w-0.65*inch, 0.55*inch)
-        canvas.setFont("Times-Italic", 7); canvas.setFillColor(AMBER)
-        canvas.drawString(0.65*inch, 0.38*inch,
-            "NOT LEGAL ADVICE — Organizational tool only. Consult a licensed attorney before filing.")
-        canvas.setFont("Helvetica", 7); canvas.setFillColor(HexColor("#506070"))
-        canvas.drawRightString(w-0.65*inch, 0.38*inch, f"Page {doc.page}  ·  {generated}")
-        canvas.restoreState()
-
-    story = [Spacer(1, 0.2*inch),
-             Paragraph("Evidence Integrity", h1),
-             Paragraph("Proof Statement — Generated by SynJuris", sub)]
-
-    # Disclaimer block
-    disc_data = [[Paragraph(
-        "<b>IMPORTANT — NOT LEGAL ADVICE</b><br/>"
-        "This document was generated by SynJuris, an organizational tool, not a law firm. "
-        "Nothing here constitutes legal advice. This statement describes the cryptographic "
-        "state of an evidence log only. Consult a licensed attorney regarding admissibility "
-        "and legal significance before filing or presenting this document.", disc)]]
-    dt = Table(disc_data, colWidths=[doc.width])
-    dt.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,-1),HexColor("#fdf8f0")),
-        ("BOX",(0,0),(-1,-1),0.75,AMBER),
-        ("TOPPADDING",(0,0),(-1,-1),10),("BOTTOMPADDING",(0,0),(-1,-1),10),
-        ("LEFTPADDING",(0,0),(-1,-1),12),("RIGHTPADDING",(0,0),(-1,-1),12),
-    ]))
-    story += [dt, Spacer(1,0.18*inch)]
-
-    # Case info
-    story.append(Paragraph("CASE INFORMATION", sec))
-    meta = [
-        ("CASE TITLE", case.get("title","")),
-        ("TYPE", (case.get("case_type","") or "").replace("_"," ").title()),
-        ("JURISDICTION", case.get("jurisdiction","") or "—"),
-        ("COURT", case.get("court_name","") or "—"),
-        ("CASE NUMBER", case.get("case_number","") or "—"),
-        ("CHAIN ROOT HASH", chain_hash),
-        ("EXHIBITS CONFIRMED", str(len(exhibits))),
-        ("GENERATED", datetime.now().isoformat()),
-    ]
-    mt = Table([[Paragraph(k,S("mk",fontName="Helvetica-Bold",fontSize=8,leading=12,textColor=HexColor("#506070"))),
-                 Paragraph(str(v),S("mv",fontName="Courier",fontSize=9,leading=13,textColor=INK))]
-                for k,v in meta],
-               colWidths=[1.5*inch, doc.width-1.5*inch])
-    mt.setStyle(TableStyle([
-        ("VALIGN",(0,0),(-1,-1),"TOP"),
-        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
-        ("LEFTPADDING",(0,0),(-1,-1),0),
-        ("LINEBELOW",(0,0),(-1,-2),0.25,RULE),
-    ]))
-    story += [mt, Spacer(1,0.2*inch), Paragraph("EXHIBIT CHAIN", sec)]
-
-    prev_hash = "GENESIS"
-    for i, ev in enumerate(exhibits):
-        node_hash = hashlib.sha256(
-            json.dumps({"id":ev["id"],"ex":ev["exhibit_number"],"content":ev["content"],"date":ev["event_date"]},
-                       sort_keys=True).encode()
-        ).hexdigest()
-        chain_link = hashlib.sha256(f"{prev_hash}:{node_hash}".encode()).hexdigest()
-        content_display = (ev.get("content") or "")[:200]
-        if len(ev.get("content","")) > 200: content_display += "…"
-
-        block = KeepTogether([
-            Table([[Paragraph(ev.get("exhibit_number") or f"Exhibit {i+1}", exn),
-                    Paragraph("<font color='#4caf82'>✓ SEALED</font>",
-                              S("vf",fontName="Helvetica-Bold",fontSize=8,leading=12,textColor=GREEN))]],
-                  colWidths=[1.5*inch, doc.width-1.5*inch],
-                  style=TableStyle([
-                      ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
-                      ("TOPPADDING",(0,0),(-1,-1),7),("BOTTOMPADDING",(0,0),(-1,-1),4),
-                      ("LEFTPADDING",(0,0),(-1,-1),10),
-                      ("BACKGROUND",(0,0),(-1,-1),LIGHT),
-                      ("LINEABOVE",(0,0),(-1,0),0.5,GOLD),
-                  ])),
-            Table([
-                [Paragraph("DESCRIPTION",S("k",fontName="Helvetica-Bold",fontSize=8,leading=12,textColor=HexColor("#506070"))),
-                 Paragraph(content_display or "—", smol)],
-                [Paragraph("DATE",S("k",fontName="Helvetica-Bold",fontSize=8,leading=12,textColor=HexColor("#506070"))),
-                 Paragraph(ev.get("event_date") or "—", smol)],
-                [Paragraph("CATEGORY FLAG",S("k",fontName="Helvetica-Bold",fontSize=8,leading=12,textColor=HexColor("#506070"))),
-                 Paragraph((ev.get("category") or "Uncategorized") + " (research indicator — not a legal finding)", smol)],
-                [Paragraph("NODE HASH",S("k",fontName="Helvetica-Bold",fontSize=8,leading=12,textColor=HexColor("#506070"))),
-                 Paragraph(node_hash, S("mh",fontName="Courier",fontSize=8,leading=12,textColor=HexColor("#506070")))],
-            ], colWidths=[1.5*inch, doc.width-1.5*inch],
-               style=TableStyle([
-                   ("VALIGN",(0,0),(-1,-1),"TOP"),
-                   ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
-                   ("LEFTPADDING",(0,0),(-1,-1),10),
-                   ("LINEBELOW",(0,0),(-1,-2),0.25,RULE),
-               ])),
-            Spacer(1,8),
-        ])
-        story.append(block)
-        prev_hash = chain_link
-
-    # Final hash block
-    ft = Table([[Paragraph(
-        f"<b>FINAL CHAIN STATE</b><br/>"
-        f"<font name=\'Courier\' size=\'8\'>{chain_hash}</font><br/><br/>"
-        f"This hash represents {len(exhibits)} confirmed exhibit(s) at time of export. "
-        f"Post-confirmation alteration would produce a different hash.<br/><br/>"
-        f"<i>Generated by SynJuris v{VERSION} on {datetime.now().isoformat()}. "
-        f"Not legal advice. Consult a licensed attorney.</i>", smol)]], colWidths=[doc.width])
-    ft.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,-1),LIGHT),("BOX",(0,0),(-1,-1),0.75,GOLD),
-        ("TOPPADDING",(0,0),(-1,-1),12),("BOTTOMPADDING",(0,0),(-1,-1),12),
-        ("LEFTPADDING",(0,0),(-1,-1),14),("RIGHTPADDING",(0,0),(-1,-1),14),
-    ]))
-    story += [Spacer(1,0.1*inch), ft]
-
-    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
-    return buf.getvalue()
-
-# ══════════════════════════════════════════════════════════════════════════════
 # MODULE 11 — HTTP REQUEST HANDLER & ROUTES
 # All routes in one handler class.
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1305,15 +864,6 @@ class SynJurisHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write(f"{self.address_string()} [{self.log_date_time_string()}] {fmt % args}\n")
 
-    def end_headers(self):
-        """Inject security headers on every response."""
-        self.send_header("Content-Security-Policy", _CSP_POLICY)
-        self.send_header("X-Frame-Options",         "DENY")
-        self.send_header("X-Content-Type-Options",  "nosniff")
-        self.send_header("Referrer-Policy",          "no-referrer")
-        self.send_header("X-XSS-Protection",         "1; mode=block")
-        super().end_headers()
-
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -1325,43 +875,72 @@ class SynJurisHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
-        # Static file serving
-        if path.startswith("/static/"):
-            if not _serve_static_file(self, path[8:]):
-                _json_response(self, {"error": "not found"}, 404)
-            return
+        if path == "/":
+            html = b"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SYNJURIS | The Advantage is Technical</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root { --obsidian: #0D0D0D; --cobalt: #2E5BFF; --gold: #D4AF37; --slate: #F2F2F2; }
+        body { background: var(--obsidian); color: var(--slate); font-family: 'Inter', sans-serif; margin: 0; line-height: 1.6; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+        header { border-bottom: 2px solid var(--cobalt); padding: 4rem 2rem; text-align: left; max-width: 1200px; margin: 0 auto; }
+        h1 { font-size: 5rem; font-weight: 700; margin: 0; text-transform: uppercase; letter-spacing: -2px; }
+        .highlight { color: var(--cobalt); }
+        .hero-sub { font-size: 1.5rem; margin-top: 1rem; color: #888; max-width: 600px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 1px solid #333; max-width: 1200px; margin: 4rem auto; }
+        .cell { padding: 2rem; border: 1px solid #333; }
+        .cell h3 { color: var(--gold); text-transform: uppercase; font-size: 0.9rem; margin-bottom: 1rem; }
+        .cta-section { background: var(--cobalt); color: white; padding: 4rem 2rem; text-align: center; }
+        .btn { background: white; color: var(--cobalt); padding: 1.5rem 3rem; font-weight: 700; text-decoration: none; display: inline-block; text-transform: uppercase; }
+        .price { font-size: 3rem; display: block; margin: 1rem 0; font-family: 'JetBrains Mono'; }
+        footer { padding: 2rem; text-align: center; font-size: 0.8rem; color: #444; border-top: 1px solid #333; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="mono highlight">v3.0.0-MASTER // LOCAL_BUILD</div>
+        <h1>Syn<span class="highlight">Juris</span></h1>
+        <p class="hero-sub">The court system is a machine. Stop fighting it with emotion. Start navigating it with data.</p>
+    </header>
 
-        # Portal
-        if path.startswith("/portal/"):
-            token = path[len("/portal/"):]
-            conn  = get_db()
-            pt    = conn.execute(
-                "SELECT case_id, revoked FROM portal_tokens WHERE token=?", (token,)
-            ).fetchone()
-            conn.close()
-            if not pt or pt[1]:
-                _send_html(self, _render_portal(0, token))
-            else:
-                _send_html(self, _render_portal(pt[0], token))
-            return
+    <section class="grid">
+        <div class="cell">
+            <h3>01 / Deterministic Logic</h3>
+            <p>Our <strong>9&sup3; Protocol</strong> transforms chaotic case details into a three-axis vector (x, y, z). Know your standing before you file.</p>
+        </div>
+        <div class="cell">
+            <h3>02 / Gray Rock Guardrails</h3>
+            <p>Integrated filters strip high-conflict markers from your communication, ensuring every message is &ldquo;Court-Ready&rdquo; and neutral.</p>
+        </div>
+        <div class="cell">
+            <h3>03 / Merkle Integrity</h3>
+            <p>Every exhibit is hashed into a Merkle DAG Ledger. Evidence integrity is not an option; it&rsquo;s a cryptographic guarantee.</p>
+        </div>
+    </section>
 
-        # UI shell routes
-        if path in ("/", ""):
-            html = _read_static("dashboard.html")
-            if _needs_disclaimer(1):
-                html = html.replace("</body>", _get_disclaimer_modal() + "</body>")
-            _send_html(self, html)
-            return
+    <section class="cta-section">
+        <h2>FOUNDATIONAL BINARY</h2>
+        <p>Full Local-First License. No Cloud Dependency. Your Data Stays Yours.</p>
+        <span class="price">$49.00</span>
+        <p><em>Strictly limited to the first 100 licensees.</em></p>
+        <a href="#" class="btn">Secure the Advantage</a>
+    </section>
 
-        if path == "/login":
-            _send_html(self, _read_static("login.html"))
-            return
+    <footer>
+        SYNJURIS &copy; 2026 // CASE_INTEL_SYSTEM // JACKSON_TN_NODE
+    </footer>
+</body>
+</html>"""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", len(html))
+            self.end_headers()
+            self.wfile.write(html)
 
-        if path == "/onboarding":
-            _send_html(self, _read_static("onboarding.html"))
-            return
-
-        if path == "/health":
+        elif path == "/health":
             _json_response(self, {"status": "ok", "version": VERSION})
 
         elif path == "/api/version":
@@ -1428,137 +1007,6 @@ class SynJurisHandler(BaseHTTPRequestHandler):
                 _json_response(self, {"jurisdiction": canonical, "statutes": laws})
             else:
                 _json_response(self, {"error": f"Jurisdiction '{raw}' not found"}, 404)
-
-        # ── Disclaimer acknowledgment ────────────────────────────────────
-        elif path == "/api/disclaimer/ack":
-            _record_disclaimer_ack(ip_hint=self.client_address[0])
-            _json_response(self, {"ok": True, "version": DISCLAIMER_VERSION})
-
-        # ── Portal token management ───────────────────────────────────────
-        elif re.match(r"^/api/cases/(\d+)/portal-token$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/portal-token$", path).group(1))
-            token = _generate_portal_token(case_id)
-            host  = self.headers.get("Host", f"localhost:{PORT}")
-            _json_response(self, {"token": token, "url": f"http://{host}/portal/{token}"})
-
-        elif re.match(r"^/api/cases/(\d+)/portal-token/revoke$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/portal-token/revoke$", path).group(1))
-            conn = get_db()
-            conn.execute("UPDATE portal_tokens SET revoked=1 WHERE case_id=?", (case_id,))
-            conn.commit()
-            conn.close()
-            _json_response(self, {"ok": True})
-
-        # ── Proof PDF export ──────────────────────────────────────────────
-        elif re.match(r"^/api/cases/(\d+)/dag-proof$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/dag-proof$", path).group(1))
-            if not HAS_REPORTLAB:
-                _json_response(self, {"error": "reportlab not installed. Run: pip install reportlab"}, 501)
-                return
-            try:
-                pdf = _generate_proof_pdf(case_id)
-                self.send_response(200)
-                self.send_header("Content-Type",        "application/pdf")
-                self.send_header("Content-Disposition", f'attachment; filename="synjuris-proof-case{case_id}.pdf"')
-                self.send_header("Content-Length",      str(len(pdf)))
-                self.end_headers()
-                self.wfile.write(pdf)
-            except Exception as e:
-                _json_response(self, {"error": str(e)}, 500)
-
-        # ── Exhibit confirm (seal into Merkle DAG) ────────────────────────
-        elif re.match(r"^/api/cases/(\d+)/evidence/(\d+)/confirm$", path):
-            m       = re.match(r"^/api/cases/(\d+)/evidence/(\d+)/confirm$", path)
-            case_id = int(m.group(1))
-            ev_id   = int(m.group(2))
-            conn    = get_db()
-            # Assign exhibit number
-            n = (conn.execute(
-                "SELECT COUNT(*) FROM evidence WHERE case_id=? AND confirmed=1", (case_id,)
-            ).fetchone()[0] or 0) + 1
-            ex_num = f"Exhibit {n}"
-            conn.execute("UPDATE evidence SET confirmed=1, exhibit_number=? WHERE id=?", (ex_num, ev_id))
-            conn.commit()
-            # Seal into Merkle DAG
-            ev_row = conn.execute("SELECT * FROM evidence WHERE id=?", (ev_id,)).fetchone()
-            if ev_row:
-                merkle_hash = add_exhibit_to_dag(conn, case_id, dict(ev_row))
-            else:
-                merkle_hash = "n/a"
-            conn.commit()
-            conn.close()
-            _json_response(self, {"exhibit_number": ex_num, "merkle_hash": merkle_hash, "ok": True})
-
-        # ── Disclaimer ack ───────────────────────────────────────────────────
-        elif path == "/api/disclaimer/ack":
-            _record_disclaimer_ack(ip_hint=self.client_address[0])
-            _json_response(self, {"ok": True, "version": DISCLAIMER_VERSION})
-
-        # ── Portal token ─────────────────────────────────────────────────────
-        elif re.match(r"^/api/cases/(\d+)/portal-token$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/portal-token$", path).group(1))
-            token = _generate_portal_token(case_id)
-            host  = self.headers.get("Host", f"localhost:{PORT}")
-            _json_response(self, {"token": token, "url": f"http://{host}/portal/{token}"})
-
-        elif re.match(r"^/api/cases/(\d+)/portal-token/revoke$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/portal-token/revoke$", path).group(1))
-            conn = get_db()
-            conn.execute("UPDATE portal_tokens SET revoked=1 WHERE case_id=?", (case_id,))
-            conn.commit()
-            conn.close()
-            _json_response(self, {"ok": True})
-
-        # ── Proof PDF ────────────────────────────────────────────────────────
-        elif re.match(r"^/api/cases/(\d+)/dag-proof$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/dag-proof$", path).group(1))
-            if not HAS_REPORTLAB:
-                _json_response(self, {"error": "reportlab not installed. Run: pip install reportlab"}, 501)
-                return
-            try:
-                pdf = _generate_proof_pdf(case_id)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/pdf")
-                self.send_header("Content-Disposition", f'attachment; filename="proof-case{case_id}.pdf"')
-                self.send_header("Content-Length", str(len(pdf)))
-                self.end_headers()
-                self.wfile.write(pdf)
-            except Exception as e:
-                _json_response(self, {"error": str(e)}, 500)
-
-        # ── Exhibit confirm ──────────────────────────────────────────────────
-        elif re.match(r"^/api/cases/(\d+)/evidence/(\d+)/confirm$", path):
-            m       = re.match(r"^/api/cases/(\d+)/evidence/(\d+)/confirm$", path)
-            case_id = int(m.group(1))
-            ev_id   = int(m.group(2))
-            conn    = get_db()
-            n = (conn.execute(
-                "SELECT COUNT(*) FROM evidence WHERE case_id=? AND confirmed=1", (case_id,)
-            ).fetchone()[0] or 0) + 1
-            ex_num = f"Exhibit {n}"
-            conn.execute("UPDATE evidence SET confirmed=1, exhibit_number=? WHERE id=?", (ex_num, ev_id))
-            conn.commit()
-            ev_row = conn.execute("SELECT * FROM evidence WHERE id=?", (ev_id,)).fetchone()
-            merkle_hash = add_exhibit_to_dag(conn, case_id, dict(ev_row)) if ev_row else "n/a"
-            conn.commit()
-            conn.close()
-            _json_response(self, {"exhibit_number": ex_num, "merkle_hash": merkle_hash, "ok": True})
-
-        # ── Parties ──────────────────────────────────────────────────────────
-        elif re.match(r"^/api/cases/(\d+)/parties$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)/parties$", path).group(1))
-            name = body.get("name", "").strip()
-            role = body.get("role", "").strip()
-            if not name:
-                return _json_response(self, {"error": "name required"}, 400)
-            conn = get_db()
-            cur = conn.execute(
-                "INSERT INTO parties (case_id, name, role) VALUES (?,?,?)",
-                (case_id, name, role)
-            )
-            conn.commit()
-            conn.close()
-            _json_response(self, {"id": cur.lastrowid}, 201)
 
         else:
             _json_response(self, {"error": "Not found", "path": path}, 404)
@@ -1654,14 +1102,12 @@ User question: {message}"""
 
             result = safe_generate_with_defense(prompt, llm_call)
 
-            # Persist exchange — only if case exists
-            case_exists = conn.execute("SELECT id FROM cases WHERE id=?", (case_id,)).fetchone()
-            if case_exists:
-                conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
-                             (case_id, "user", message))
-                conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
-                             (case_id, "assistant", result["content"]))
-                conn.commit()
+            # Persist exchange
+            conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
+                         (case_id, "user", message))
+            conn.execute("INSERT INTO chat_history (case_id, role, content) VALUES (?,?,?)",
+                         (case_id, "assistant", result["content"]))
+            conn.commit()
             conn.close()
             _json_response(self, result)
 
@@ -1766,15 +1212,7 @@ def main():
     POST /api/docs                    (document generation)
     GET  /api/jurisdictions
     GET  /api/jurisdictions/:state
-
-  v2 UI + New Endpoints:
-    GET  /                 (dashboard)  GET  /login            (login UI)
-    GET  /portal/:token    (read-only portal)  GET  /static/* (assets)
-    POST /api/disclaimer/ack  POST /api/cases/:id/portal-token
-    POST /api/cases/:id/dag-proof  POST /api/cases/:id/evidence/:id/confirm
-
-  Place login.html, onboarding.html, dashboard.html in ./static/
-""") 
+""")
 
     init_db()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), SynJurisHandler)
@@ -1782,7 +1220,7 @@ def main():
     if LOCAL_MODE:
         def _open():
             time.sleep(0.8)
-            webbrowser.open(f"http://localhost:{PORT}/health")
+            webbrowser.open(f"http://localhost:{PORT}/")
         threading.Thread(target=_open, daemon=True).start()
 
     print(f"  Server running at http://localhost:{PORT}\n  Press Ctrl+C to stop.\n")
