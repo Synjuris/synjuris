@@ -875,18 +875,17 @@ class SynJurisHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
-        if path == "/":
-            html = b"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>SYNJURIS | The Advantage is Technical</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
-    <style>
-        :root { --obsidian: #0D0D0D; --cobalt: #2E5BFF; --gold: #D4AF37; --slate: #F2F2F2; }
-        body { background: var(--obsidian); color: var(--slate); font-family: 'Inter', sans-serif; margin: 0; line-height: 1.6; }
-        .mono { font-family: 'JetBrains Mono', monospace; }
-        header { border-bottom: 2px solid var(--cobalt); padding: 4rem 2rem; text-align: left; max-width: 1200px; margin: 0 auto; }
+           if path == "/":
+            try:
+                with open("templates/index.html", "rb") as f:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(f.read())
+                return
+            except FileNotFoundError:
+                _json_response(self, {"error": "UI template not found"}, 404)
+ 2rem; text-align: left; max-width: 1200px; margin: 0 auto; }
         h1 { font-size: 5rem; font-weight: 700; margin: 0; text-transform: uppercase; letter-spacing: -2px; }
         .highlight { color: var(--cobalt); }
         .hero-sub { font-size: 1.5rem; margin-top: 1rem; color: #888; max-width: 600px; }
