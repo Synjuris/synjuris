@@ -27,7 +27,7 @@
         section { padding: 3rem 20px; max-width: 1100px; width: 100%; border-bottom: 1px solid var(--border); }
         .no-border { border: none; }
 
-        h1 { font-family: 'Playfair Display', serif; font-size: 2.5rem; color: var(--gold); text-transform: uppercase; margin: 0; line-height: 1.1; }
+        h1 { font-family: 'Playfair Display', serif; font-size: 2.2rem; color: var(--gold); text-transform: uppercase; margin: 0; line-height: 1.1; }
         h2 { font-family: 'Playfair Display', serif; font-size: 1.8rem; color: var(--gold); margin-bottom: 1.5rem; }
         .tagline { color: var(--slate); font-weight: 700; font-size: 0.8rem; letter-spacing: 2px; margin: 1rem 0 2rem 0; }
 
@@ -36,11 +36,11 @@
         .box-list li { margin-bottom: 1rem; padding-left: 1.5rem; position: relative; color: var(--slate); list-style: none; font-size: 0.95rem; }
         .box-list li::before { content: '✓'; position: absolute; left: 0; color: var(--gold); font-weight: 700; }
 
-        /* Mobile Optimized CTA Box */
+        /* Mobile-First CTA Fix */
         .cta-box { 
             background: rgba(197, 160, 89, 0.05); border: 1px solid var(--gold); 
-            padding: 2rem; margin: 3rem 0; width: 100%; max-width: 800px;
-            display: flex; flex-direction: column; gap: 1.5rem; align-items: center; border-radius: 4px; 
+            padding: 2rem; margin: 3rem 0; width: 95%; max-width: 900px;
+            display: flex; flex-direction: column; gap: 2rem; align-items: center; border-radius: 4px; 
         }
         @media (min-width: 768px) {
             .cta-box { flex-direction: row; justify-content: space-between; padding: 3rem; }
@@ -48,9 +48,10 @@
         }
 
         .btn-main { 
-            background: var(--gold); color: var(--navy); padding: 1.2rem 2.5rem; 
+            background: var(--gold); color: var(--navy); padding: 1.2rem 2rem; 
             font-weight: 700; text-decoration: none; text-transform: uppercase; 
-            border-radius: 2px; transition: 0.3s; width: 100%; max-width: 300px;
+            border-radius: 2px; transition: 0.3s; width: 100%; max-width: 320px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
         }
         .btn-main:hover { opacity: 0.9; transform: translateY(-2px); }
 
@@ -98,7 +99,7 @@
             <h3>Data & Security</h3>
             <ul>
                 <li><strong>Evidence Integrity Ledger:</strong> Secure your exhibits with tamper-evident digital signatures for total confidence in your records.</li>
-                <li><strong>Behavioral Marker Detection:</strong> Automatically flag patterns of <strong>Gatekeeping</strong>, <strong>Litigation Abuse</strong>, <strong>Disparagement</strong>, <strong>Stonewalling</strong>, and more.</li>
+                <li><strong>Behavioral Marker Detection:</strong> Automatically flag patterns of <strong>Gatekeeping</strong>, <strong>Parental Alienation</strong>, <strong>Violation of Order</strong>, <strong>Harassment</strong>, <strong>Stonewalling</strong>, and more.</li>
                 <li><strong>Local-First Privacy:</strong> Your strategy and data never leave your physical machine—ensuring your privacy remains absolute.</li>
             </ul>
         </div>
@@ -126,7 +127,7 @@
 
     <section class="no-border">
         <div class="cta-box">
-            <div style="text-align: left;">
+            <div style="text-align: left; width: 100%;">
                 <div class="mono" style="margin-bottom: 0.5rem;">GENESIS_BLOCK_LICENSE</div>
                 <div style="font-size: 2.2rem; font-weight: 700;">$49.00</div>
                 <div style="font-size: 0.8rem; color: var(--slate);">LIFETIME ACCESS // ONE-TIME ACQUISITION</div>
