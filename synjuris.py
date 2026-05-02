@@ -870,37 +870,28 @@ class SynJurisHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+        def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
         if path == "/":
             try:
                 with open("templates/index.html", "rb") as f:
+                    content = f.read()
                     self.send_response(200)
-                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(content)))
                     self.end_headers()
-                    self.wfile.write(f.read())
+                    self.wfile.write(content)
                 return
             except FileNotFoundError:
-                _json_response(self, {"error": "UI template not found in /templates"}, 404)
+                _json_response(self, {"error": "UI template not found"}, 404)
             return
 
-        elif path == "/health":
-            _json_response(self, {"status": "ok", "version": VERSION})
-
-        elif path == "/api/cases":
-            conn = get_db()
-            rows = [dict(r) for r in conn.execute("SELECT * FROM cases WHERE is_deleted=0 ORDER BY created_at DESC").fetchall()]
-            conn.close()
-            _json_response(self, {"cases": rows})
-
-        elif re.match(r"^/api/cases/(\d+)$", path):
-            case_id = int(re.match(r"^/api/cases/(\d+)$", path).group(1))
-            conn = get_db()
-            row = conn.execute("SELECT * FROM cases WHERE id=? AND is_deleted=0", (case_id,)).fetchone()
-            if not row:
-                conn.close()
-                return _json_response(self, {"error": "not found"}, 404)
             case = dict(row)
             case["parties"]  = [dict(r) for r in conn.execute("SELECT * FROM parties WHERE case_id=?", (case_id,)).fetchall()]
             case["evidence"] = [dict(r) for r in conn.execute("SELECT * FROM evidence WHERE case_id=? AND is_deleted=0 ORDER BY event_date", (case_id,)).fetchall()]
