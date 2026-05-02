@@ -3,86 +3,121 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SYNJURIS | Local-First Legal Intelligence</title>
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <title>SYNJURIS | Technical Legal Advantage</title>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
     <style>
         :root { 
-            --navy: #0A192F; --gold: #C5A059; --gold-muted: rgba(197, 160, 89, 0.1); 
-            --slate: #A8B2D1; --white: #E6F1FF; 
+            --navy: #0A192F; --gold: #C5A059; --slate: #A8B2D1; --white: #E6F1FF; 
+            --border: rgba(197, 160, 89, 0.2);
         }
         body { 
             background: var(--navy); color: var(--white); 
             font-family: 'Inter', sans-serif; margin: 0; text-align: center;
             line-height: 1.6; display: flex; flex-direction: column; align-items: center;
         }
+        .mono { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; letter-spacing: 1px; }
         
-        /* Header / Nav */
+        /* Navigation */
         nav { 
             width: 100%; padding: 1.5rem 2rem; display: flex; justify-content: space-between; 
             align-items: center; max-width: 1200px; box-sizing: border-box;
         }
-        .logo { color: var(--gold); font-family: 'Playfair Display', serif; font-size: 1.5rem; letter-spacing: 2px; }
-        .nav-right { display: flex; gap: 1rem; align-items: center; }
-        .btn-outline { border: 1px solid #333; color: var(--slate); padding: 0.5rem 1rem; text-decoration: none; font-size: 0.8rem; border-radius: 4px; }
+        .logo { color: var(--gold); font-family: 'Playfair Display', serif; font-size: 1.5rem; letter-spacing: 2px; text-decoration: none; }
 
-        /* Hero Section */
+        /* Hero Header */
         header { margin-top: 4rem; padding: 0 20px; }
         h1 { 
-            font-family: 'Playfair Display', serif; font-size: 4rem; color: var(--gold); 
-            text-transform: uppercase; letter-spacing: 4px; margin-bottom: 1rem; 
+            font-family: 'Playfair Display', serif; font-size: 3.5rem; color: var(--gold); 
+            text-transform: uppercase; letter-spacing: 4px; margin-bottom: 0.5rem; 
         }
-        .tags { color: #444; font-size: 0.8rem; letter-spacing: 2px; margin-bottom: 3rem; }
-        .hero-text { max-width: 650px; font-size: 1.2rem; color: var(--slate); margin: 0 auto 3rem auto; }
+        .tagline { color: var(--slate); font-weight: 700; font-size: 0.9rem; letter-spacing: 3px; margin-bottom: 3rem; }
+        .hero-text { max-width: 750px; font-size: 1.2rem; color: var(--slate); margin: 0 auto 4rem auto; line-height: 1.8; }
 
-        /* Legal Card (The Work-Product Box) */
-        .legal-card { 
-            background: rgba(255, 255, 255, 0.03); border: 1px solid #1a2a44; 
-            padding: 2.5rem; border-radius: 8px; max-width: 750px; margin: 0 20px 4rem 20px;
-            text-align: center;
+        /* Feature Matrix */
+        .feature-grid { 
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); 
+            gap: 2rem; max-width: 1100px; width: 90%; margin-bottom: 5rem;
         }
-        .legal-card h3 { 
+        .feature-card { 
+            background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); 
+            padding: 2rem; border-radius: 4px; text-align: left; transition: 0.3s;
+        }
+        .feature-card:hover { border-color: var(--gold); background: rgba(197, 160, 89, 0.05); }
+        .feature-card h3 { 
             color: var(--gold); font-size: 0.8rem; text-transform: uppercase; 
-            letter-spacing: 2px; margin-top: 0; margin-bottom: 1.5rem;
+            letter-spacing: 2px; margin-top: 0; margin-bottom: 1rem;
         }
-        .legal-card p { font-size: 0.95rem; color: var(--slate); line-height: 1.8; }
+        .feature-card p { font-size: 0.9rem; color: var(--slate); margin: 0; }
 
-        /* Action */
+        /* Technical Specs List */
+        .specs { max-width: 800px; width: 90%; margin-bottom: 5rem; border-top: 1px solid var(--border); padding-top: 3rem; }
+        .spec-row { display: flex; justify-content: space-between; padding: 0.8rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.85rem; }
+        .spec-label { color: #555; text-transform: uppercase; }
+
+        /* CTA Section */
+        .cta-box { 
+            background: rgba(197, 160, 89, 0.05); border: 1px solid var(--gold); 
+            padding: 3rem; border-radius: 4px; max-width: 800px; width: 90%;
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 6rem;
+        }
         .btn-main { 
             background: var(--gold); color: var(--navy); padding: 1.2rem 3rem; 
-            font-weight: 700; text-decoration: none; border-radius: 6px; font-size: 1.1rem;
-            display: inline-block; transition: 0.3s;
+            font-weight: 700; text-decoration: none; border-radius: 4px; font-size: 1rem;
+            text-transform: uppercase; letter-spacing: 1px;
         }
-        .btn-main:hover { transform: translateY(-2px); opacity: 0.9; }
 
-        footer { margin: 5rem 0 3rem 0; color: #333; font-size: 0.8rem; }
+        footer { margin-bottom: 3rem; color: #333; font-size: 0.75rem; letter-spacing: 1px; }
     </style>
 </head>
 <body>
 
     <nav>
-        <div class="logo">SYNJURIS</div>
-        <div class="nav-right">
-            <span style="color: #444; font-size: 0.7rem;">offline // no key set</span>
-            <a href="#" class="btn-outline">Pro Se</a>
-            <a href="#" class="btn-outline">Sign out</a>
-        </div>
+        <a href="/" class="logo">SYNJURIS</a>
+        <div class="mono" style="color: #444;">SYSTEM_STATUS: <span style="color: var(--gold)">v3.0.0-RELEASE</span></div>
     </nav>
 
     <header>
-        <h1>SynJuris</h1>
-        <div class="tags">LOCAL-FIRST  ·  AI-ASSISTED  ·  DATA SECURITY</div>
-        <p class="hero-text">Built for pro se litigants. Organize evidence, understand your rights, draft documents, and prepare for court — all running locally. Your data never leaves this computer.</p>
+        <h1>The Advantage is Technical.</h1>
+        <div class="tagline">DETERMINISTIC LEGAL NAVIGATION</div>
+        <p class="hero-text">SynJuris is a local-first legal intelligence platform designed for high-stakes litigation. We replace emotional volatility with deterministic data mapping, automated communication guardrails, and cryptographic evidence integrity.</p>
     </header>
 
-    <div class="legal-card">
-        <h3>⚖ WORK-PRODUCT PROTECTION</h3>
-        <p>Communications with cloud AI tools have been ruled non-privileged in federal proceedings because they involve third-party transmission. SynJuris runs entirely on your machine — no third party ever receives your case data — which means your strategy may retain work-product status that cloud tools cannot provide.</p>
+    <section class="feature-grid">
+        <div class="feature-card">
+            <h3>Deterministic Mapping</h3>
+            <p>Quantify case standing across three critical axes of legal weight. Stop relying on intuition and start visualizing your procedural position with mathematical clarity.</p>
+        </div>
+        <div class="feature-card">
+            <h3>Grey Rock Guardrails</h3>
+            <p>Integrated filters analyze drafts for high-conflict markers and emotional triggers, refining correspondence into neutral, court-admissible communication.</p>
+        </div>
+        <div class="feature-card">
+            <h3>Cryptographic Ledger</h3>
+            <p>Secure exhibits in a Merkle-based ledger. Every file is hashed locally, creating a tamper-evident audit trail for court submission that guarantees integrity.</p>
+        </div>
+        <div class="feature-card">
+            <h3>Pattern Recognition</h3>
+            <p>Automatically scan opposing filings for gaslighting markers, procedural inconsistencies, and bad-faith tactical patterns before they can disrupt your strategy.</p>
+        </div>
+    </section>
+
+    <div class="specs">
+        <div class="spec-row"><span class="spec-label">Privacy Architecture</span><span>Zero-Cloud / 100% Local-First Data Retention</span></div>
+        <div class="spec-row"><span class="spec-label">Integrity Protocol</span><span>Merkle DAG Evidence Hashing & Verification</span></div>
+        <div class="spec-row"><span class="spec-label">Security Standards</span><span>AES-256-GCM Local Encryption</span></div>
+        <div class="spec-row"><span class="spec-label">Output Management</span><span>Verified PDF & Exhibit Metadata Bundling</span></div>
     </div>
 
-    <a href="#" class="btn-main">Start a New Case</a>
+    <div class="cta-box">
+        <div style="text-align: left;">
+            <div class="mono" style="color: var(--gold); margin-bottom: 0.5rem;">FOUNDATIONAL RELEASE</div>
+            <div style="font-size: 1.8rem; font-weight: 700;">Lifetime License: $49.00</div>
+        </div>
+        <a href="#" class="btn-main">Secure Access</a>
+    </div>
 
     <footer>
-        SYNJURIS &copy; 2026 // PRIVATE_LEGAL_INTELLIGENCE
+        SYNJURIS TECHNOLOGY GROUP &copy; 2026 // ALL DATA RETAINED ON USER MACHINE // ZERO CLOUD DEPENDENCY
     </footer>
 
 </body>
