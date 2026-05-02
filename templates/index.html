@@ -2,57 +2,132 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SYNJURIS | The Advantage is Technical</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <title>SYNJURIS | Technical Legal Advantage</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono&display=swap" rel="stylesheet">
     <style>
-        :root { --obsidian: #0D0D0D; --cobalt: #2E5BFF; --gold: #D4AF37; --slate: #F2F2F2; }
-        body { background: var(--obsidian); color: var(--slate); font-family: 'Inter', sans-serif; margin: 0; line-height: 1.6; }
-        .mono { font-family: 'JetBrains Mono', monospace; }
-        header { border-bottom: 2px solid var(--cobalt); padding: 4rem 2rem; text-align: left; max-width: 1200px; margin: 0 auto; }
-        h1 { font-size: 5rem; font-weight: 700; margin: 0; text-transform: uppercase; letter-spacing: -2px; }
-        .highlight { color: var(--cobalt); }
-        .hero-sub { font-size: 1.5rem; margin-top: 1rem; color: #888; max-width: 600px; }
-        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 1px solid #333; max-width: 1200px; margin: 4rem auto; }
-        .cell { padding: 2rem; border: 1px solid #333; }
-        .cell h3 { color: var(--gold); text-transform: uppercase; font-size: 0.9rem; margin-bottom: 1rem; }
-        .cta-section { background: var(--cobalt); color: white; padding: 4rem 2rem; text-align: center; }
-        .btn { background: white; color: var(--cobalt); padding: 1.5rem 3rem; font-weight: 700; text-decoration: none; display: inline-block; text-transform: uppercase; }
-        .price { font-size: 3rem; display: block; margin: 1rem 0; font-family: 'JetBrains Mono'; }
-        footer { padding: 2rem; text-align: center; font-size: 0.8rem; color: #444; border-top: 1px solid #333; }
+        :root { 
+            --obsidian: #0D0D0D; --cobalt: #2E5BFF; --slate: #F2F2F2; 
+            --glass: rgba(255, 255, 255, 0.03); --border: #222; --gold: #D4AF37;
+        }
+        * { box-sizing: border-box; }
+        body { 
+            background: var(--obsidian); color: var(--slate); 
+            font-family: 'Inter', sans-serif; margin: 0; display: flex; height: 100vh; overflow: hidden;
+        }
+        .mono { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+
+        /* Sidebar Navigation */
+        nav { 
+            width: 260px; border-right: 1px solid var(--border); 
+            padding: 2rem 1.5rem; display: flex; flex-direction: column; gap: 2rem;
+        }
+        .logo { font-weight: 700; font-size: 1.2rem; letter-spacing: -1px; color: var(--cobalt); }
+        .nav-group { display: flex; flex-direction: column; gap: 0.5rem; }
+        .nav-item { color: #666; text-decoration: none; font-size: 0.9rem; padding: 0.5rem 0; transition: 0.2s; }
+        .nav-item:hover { color: var(--slate); }
+        .active { color: var(--cobalt); font-weight: 600; }
+
+        /* Main Workspace */
+        main { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
+        header { 
+            padding: 1.5rem 3rem; border-bottom: 1px solid var(--border); 
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .status-pill { background: rgba(46, 91, 255, 0.1); color: var(--cobalt); padding: 0.25rem 0.75rem; border-radius: 4px; font-size: 0.7rem; border: 1px solid var(--cobalt); }
+
+        /* Content Dashboard */
+        .dashboard { padding: 3rem; max-width: 1100px; }
+        h1 { font-size: 2.8rem; margin: 0 0 1rem 0; font-weight: 600; letter-spacing: -1px; }
+        .hero-sub { color: #888; font-size: 1.1rem; margin-bottom: 3.5rem; max-width: 800px; line-height: 1.6; }
+
+        /* Feature Matrix */
+        .feature-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2rem; margin-bottom: 4rem; }
+        .feature-card { 
+            background: var(--glass); border-left: 3px solid var(--border); 
+            padding: 1.5rem 2rem; transition: 0.3s;
+        }
+        .feature-card:hover { border-left-color: var(--cobalt); background: rgba(255,255,255,0.05); }
+        .feature-card h3 { font-size: 0.9rem; color: var(--cobalt); text-transform: uppercase; margin: 0 0 0.75rem 0; letter-spacing: 1px; }
+        .feature-card p { color: #aaa; font-size: 0.95rem; margin: 0; line-height: 1.5; }
+
+        /* Feature List Section */
+        .specs-list { margin-bottom: 4rem; border-top: 1px solid var(--border); padding-top: 3rem; }
+        .specs-list h2 { font-size: 1.2rem; margin-bottom: 2rem; color: var(--slate); }
+        .spec-item { display: flex; justify-content: space-between; padding: 1rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+        .spec-label { color: #666; }
+        .spec-value { color: var(--slate); font-weight: 600; }
+
+        .cta-bar { 
+            padding: 2.5rem; border: 1px solid var(--cobalt); 
+            background: linear-gradient(90deg, rgba(46, 91, 255, 0.05) 0%, transparent 100%);
+            display: flex; justify-content: space-between; align-items: center; border-radius: 4px;
+        }
+        .btn { background: var(--cobalt); color: white; padding: 1.2rem 2.5rem; text-decoration: none; font-weight: 600; font-size: 0.9rem; border-radius: 2px; }
+        footer { padding: 4rem 0 2rem 0; color: #444; font-size: 0.75rem; text-align: left; }
     </style>
 </head>
 <body>
-    <header>
-        <div class="mono highlight">v3.0.0-MASTER // LOCAL_BUILD</div>
-        <h1>Syn<span class="highlight">Juris</span></h1>
-        <p class="hero-sub">The court system is a machine. Stop fighting it with emotion. Start navigating it with data.</p>
-    </header>
-
-    <section class="grid">
-        <div class="cell">
-            <h3>01 / Deterministic Logic</h3>
-            <p>Our <strong>9³ Protocol</strong> transforms chaotic case details into a three-axis vector ($x, y, z$). Know your standing before you file.</p>
+    <nav>
+        <div class="logo">SYNJURIS</div>
+        <div class="nav-group">
+            <div class="mono" style="color:#444; margin-bottom:0.5rem; font-size: 0.7rem;">PRODUCT_NAV</div>
+            <a href="#" class="nav-item active">Solution Overview</a>
+            <a href="#" class="nav-item">Core Features</a>
+            <a href="#" class="nav-item">Security Protocol</a>
+            <a href="#" class="nav-item">Documentation</a>
+            <a href="#" class="nav-item">License Portal</a>
         </div>
-        <div class="cell">
-            <h3>02 / Gray Rock Guardrails</h3>
-            <p>Integrated filters strip high-conflict markers from your communication, ensuring every message is "Court-Ready" and neutral.</p>
-        </div>
-        <div class="cell">
-            <h3>03 / Merkle Integrity</h3>
-            <p>Every exhibit is hashed into a Merkle DAG Ledger. Evidence integrity is not an option; it's a cryptographic guarantee.</p>
-        </div>
-    </section>
+    </nav>
 
-    <section class="cta-section">
-        <h2>FOUNDATIONAL BINARY</h2>
-        <p>Full Local-First License. No Cloud Dependency. Your Data Stays Yours.</p>
-        <span class="price">$49.00</span>
-        <p><em>Strictly limited to the first 100 licensees.</em></p>
-        <a href="#" class="btn">Secure the Advantage</a>
-    </section>
+    <main>
+        <header>
+            <div class="mono">SYSTEM_ENCRYPTION: <span style="color:#00ff00">ACTIVE</span></div>
+            <div class="status-pill mono">v3.0.0-RELEASE</div>
+        </header>
 
-    <footer>
-        SYNJURIS &copy; 2026 // CASE_INTEL_SYSTEM // JACKSON_TN_NODE
-    </footer>
+        <section class="dashboard">
+            <h1>The Advantage is Technical.</h1>
+            <p class="hero-sub">SynJuris is an advanced legal navigation platform for high-stakes litigation. We replace emotional volatility with deterministic data mapping, automated communication guardrails, and cryptographic evidence integrity.</p>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>Deterministic Case Mapping</h3>
+                    <p>Stop relying on intuition. Our engine quantifies case standing across three critical axes of legal weight, providing a clear visualization of your procedural position.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Gray Rock Communication Guardrails</h3>
+                    <p>Integrated filters analyze your drafts for high-conflict markers and emotional triggers, refining your correspondence into neutral, court-admissible communication.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Cryptographic Evidence Vault</h3>
+                    <p>Secure your exhibits in a Merkle-based ledger. Every file is hashed and time-stamped locally, creating a tamper-evident audit trail for court submission.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>Behavioral Pattern Recognition</h3>
+                    <p>Our analysis suite scans opposing filings and communications to flag gaslighting, procedural inconsistencies, and bad-faith tactical patterns automatically.</p>
+                </div>
+            </div>
+
+            <div class="specs-list">
+                <h2>Technical Specifications</h2>
+                <div class="spec-item"><span class="spec-label">Privacy Architecture</span><span class="spec-value">Zero-Cloud / 100% Local-First Data Retention</span></div>
+                <div class="spec-item"><span class="spec-label">Strategic Guardrails</span><span class="spec-value">Built-in UPL Compliance & Pattern Auditing</span></div>
+                <div class="spec-item"><span class="spec-label">Integrity Protocol</span><span class="spec-value">Merkle DAG Evidence Hashing & Verification</span></div>
+                <div class="spec-item"><span class="spec-label">Export Capability</span><span class="spec-value">Court-Formatted PDF / Exhibit Metadata Bundles</span></div>
+            </div>
+
+            <div class="cta-bar">
+                <div>
+                    <div class="mono" style="margin-bottom:0.5rem; color: var(--gold);">FOUNDATIONAL RELEASE</div>
+                    <div style="font-size: 1.8rem; font-weight: 600;">Lifetime License: $49.00</div>
+                </div>
+                <a href="#" class="btn">SECURE THE ADVANTAGE</a>
+            </div>
+
+            <footer>
+                SYNJURIS TECHNOLOGY GROUP &copy; 2026 // ALL DATA RETAINED ON USER MACHINE // ZERO CLOUD DEPENDENCY
+            </footer>
+        </section>
+    </main>
 </body>
 </html>
