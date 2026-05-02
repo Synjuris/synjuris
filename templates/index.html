@@ -24,28 +24,29 @@
         }
         .logo { color: var(--gold); font-family: 'Playfair Display', serif; font-size: 1.5rem; letter-spacing: 2px; text-decoration: none; }
 
-        /* Sections */
         section { padding: 5rem 20px; max-width: 1000px; width: 100%; border-bottom: 1px solid var(--border); }
         .no-border { border: none; }
 
-        h1 { font-family: 'Playfair Display', serif; font-size: 3.5rem; color: var(--gold); text-transform: uppercase; margin: 0; }
+        h1 { font-family: 'Playfair Display', serif; font-size: 3.5rem; color: var(--gold); text-transform: uppercase; margin: 0; line-height: 1.1; }
         h2 { font-family: 'Playfair Display', serif; font-size: 2.2rem; color: var(--gold); margin-bottom: 2rem; }
         .tagline { color: var(--slate); font-weight: 700; font-size: 0.9rem; letter-spacing: 3px; margin: 1rem 0 3rem 0; }
 
-        /* Feature Cards */
         .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem; margin-top: 3rem; }
         .feature-card { background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border); padding: 2rem; text-align: left; }
-        .feature-card h3 { color: var(--gold); font-size: 0.8rem; text-transform: uppercase; margin-bottom: 1rem; }
+        .feature-card h3 { color: var(--gold); font-size: 0.8rem; text-transform: uppercase; margin-bottom: 1rem; border-bottom: 1px solid var(--gold); display: inline-block; padding-bottom: 4px; }
+        
+        .box-list { background: rgba(197, 160, 89, 0.03); padding: 3rem; border: 1px solid var(--border); border-radius: 4px; text-align: left; }
+        .box-list li { margin-bottom: 1rem; padding-left: 2rem; position: relative; color: var(--slate); list-style: none; }
+        .box-list li::before { content: '✓'; position: absolute; left: 0; color: var(--gold); font-weight: 700; }
 
-        /* Content Boxes */
-        .content-box { text-align: left; max-width: 850px; margin: 0 auto; }
-        .content-box p { font-size: 1.1rem; color: var(--slate); margin-bottom: 1.5rem; }
-        .highlight-text { color: var(--white); font-weight: 600; border-bottom: 1px solid var(--gold); }
+        /* Feedback Section Styles */
+        .feedback-box { background: rgba(46, 91, 255, 0.05); border: 1px solid var(--gold); padding: 3rem; margin-top: 2rem; border-radius: 4px; }
+        .feedback-box p { color: var(--slate); font-size: 1rem; margin-bottom: 2rem; }
+        .btn-secondary { border: 1px solid var(--gold); color: var(--gold); padding: 1rem 2rem; text-decoration: none; font-weight: 700; font-size: 0.8rem; text-transform: uppercase; transition: 0.3s; }
+        .btn-secondary:hover { background: var(--gold); color: var(--navy); }
 
-        /* CTA */
         .cta-box { background: rgba(197, 160, 89, 0.05); border: 1px solid var(--gold); padding: 3rem; margin: 4rem 0; display: flex; justify-content: space-between; align-items: center; border-radius: 4px; }
         .btn-main { background: var(--gold); color: var(--navy); padding: 1.2rem 3rem; font-weight: 700; text-decoration: none; text-transform: uppercase; border-radius: 2px; transition: 0.3s; }
-        .btn-main:hover { opacity: 0.9; transform: translateY(-2px); }
 
         footer { padding: 4rem 20px; color: #444; font-size: 0.7rem; letter-spacing: 1px; width: 100%; }
     </style>
@@ -54,66 +55,46 @@
 
     <nav>
         <a href="/" class="logo">SYNJURIS</a>
-        <div class="mono" style="color: var(--gold)">v1.0.0-FOUNDATIONAL</div>
+        <div class="mono" style="color: var(--gold)">v1.0.0-RELEASE</div>
     </nav>
 
     <section class="no-border">
-        <h1>The Advantage is Technical.</h1>
+        <h1>Victory is a <br>Technicality.</h1>
         <div class="tagline">DETERMINISTIC LEGAL NAVIGATION</div>
         <p style="font-size: 1.3rem; color: var(--slate); max-width: 800px; margin: 0 auto;">
-            The court system is a machine. Stop fighting it with emotion. <br>Start navigating it with data.
+            The court system is a machine. Stop fighting it with emotion. <span class="highlight-text">Start navigating with data.</span>
         </p>
     </section>
 
     <section>
-        <h2>What is SynJuris?</h2>
-        <div class="content-box">
-            <p>SynJuris is a <span class="highlight-text">local-first legal intelligence environment</span>. It is a private, offline workstation designed to help you map, secure, and win high-stakes litigation without the risks of cloud-based transmission.</p>
-            <p>By utilizing deterministic logic engines, we provide a mathematical visualization of your case standing, stripping away the emotional static that clouds strategic decision-making.</p>
-        </div>
-        <div class="feature-grid">
-            <div class="feature-card">
-                <h3>01 / Case Mapping</h3>
-                <p>Quantify procedural weight across three axes of standing to visualize your position before you file.</p>
-            </div>
-            <div class="feature-card">
-                <h3>02 / Grey Rock Guardrails</h3>
-                <p>Integrated filters strip high-conflict markers, ensuring every draft is court-ready and neutral.</p>
-            </div>
-            <div class="feature-card">
-                <h3>03 / Merkle Integrity</h3>
-                <p>Every exhibit is hashed into a Merkle DAG Ledger, guaranteeing cryptographic evidence integrity.</p>
-            </div>
+        <h2>What’s in the Box?</h2>
+        <div class="box-list">
+            <ul>
+                <li><strong>Deterministic Case Dynamics Engine:</strong> Quantify your procedural position using 3-axis X/Y/Z mapping.</li>
+                <li><strong>Grey Rock Communication Guardrails:</strong> JADE-aware filtering to strip emotional triggers and keep your correspondence court-ready.</li>
+                <li><strong>Cryptographic Merkle DAG Ledger:</strong> A tamper-evident audit trail for all evidence exhibits to ensure integrity.</li>
+                <li><strong>Behavioral Pattern Scan:</strong> Automated detection of gatekeeping, litigation abuse, and disparagement markers.</li>
+                <li><strong>Safe-AI Workstation:</strong> A secure bridge to LLM analysis that protects work-product privilege.</li>
+            </ul>
         </div>
     </section>
 
     <section>
-        <h2>Target Environments</h2>
-        <div class="content-box">
-            <p><span class="highlight-text">The Pro Se Litigant:</span> For those navigating the system without counsel who require a technical shield against bad-faith tactics and procedural gaslighting.</p>
-            
-            <p><span class="highlight-text">Small Law & Solo Practitioners:</span> A technical force-multiplier for lean firms. Automate behavioral analysis and communication filtering to handle high-conflict caseloads with minimal overhead.</p>
-            
-            <p><span class="highlight-text">Privacy-Conscious Professionals:</span> For anyone who understands that cloud AI destroys Work-Product Privilege. SynJuris ensures your strategy stays encrypted on your hardware.</p>
-        </div>
-    </section>
-
-    <section>
-        <h2>Designed by Necessity</h2>
-        <div class="content-box">
-            <p>SynJuris was built at a terminal by a <span class="highlight-text">self-taught software entrepreneur</span> who saw the legal system's flaws firsthand. It was designed to replace chaos with order.</p>
-            <p>We believe that in a system of impossible anomalies, the only effective defense is a cryptographic guarantee of truth. We provide the tools to secure it.</p>
+        <h2>System Intelligence & Feedback</h2>
+        <div class="feedback-box">
+            <p>SynJuris is built on the principle of continuous technical evolution. As a Foundational License holder, your field reports are vital. We encourage users to submit feedback regarding system performance, feature requests, and procedural anomalies observed in the field.</p>
+            <a href="mailto:feedback@synjuris.com" class="btn-secondary">Submit Intelligence Report</a>
         </div>
     </section>
 
     <section class="no-border">
         <div class="cta-box">
             <div style="text-align: left;">
-                <div class="mono" style="color: var(--gold); margin-bottom: 0.5rem;">FOUNDATIONAL RELEASE LICENSE</div>
-                <div style="font-size: 2.2rem; font-weight: 700;">$49.00</div>
-                <div style="font-size: 0.8rem; color: var(--slate);">LIFETIME ACCESS // LOCAL-FIRST BINARY</div>
+                <div class="mono" style="color: var(--gold); margin-bottom: 0.5rem;">GENESIS_LICENSE_v1.0.0</div>
+                <div style="font-size: 2.5rem; font-weight: 700;">$49.00</div>
+                <div style="font-size: 0.8rem; color: var(--slate);">LIFETIME ACCESS // LOCAL-FIRST DEPLOYMENT</div>
             </div>
-            <a href="#" class="btn-main">Deploy System</a>
+            <a href="#" class="btn-main">Acquire System</a>
         </div>
     </section>
 
