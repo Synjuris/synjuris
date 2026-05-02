@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SYNJURIS | Level the Playing Field</title>
+    <title>SYNJURIS | The Technical Advantage</title>
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
     <style>
         :root { 
@@ -28,17 +28,11 @@
         .no-border { border: none; }
 
         h1 { font-family: 'Playfair Display', serif; font-size: 3.5rem; color: var(--gold); text-transform: uppercase; margin: 0; line-height: 1.1; }
-        h2 { font-family: 'Playfair Display', serif; font-size: 2.2rem; color: var(--gold); margin-bottom: 1rem; text-transform: uppercase; letter-spacing: 2px; }
         .tagline { color: var(--slate); font-weight: 700; font-size: 0.9rem; letter-spacing: 3px; margin: 1rem 0 3rem 0; }
 
-        /* Feature Matrix */
-        .matrix { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; text-align: left; margin-top: 3rem; }
-        .matrix-item { border: 1px solid var(--border); padding: 1.5rem; background: rgba(255,255,255,0.02); }
-        .matrix-item h4 { color: var(--gold); margin: 0 0 0.5rem 0; font-size: 0.8rem; text-transform: uppercase; }
-        .matrix-item p { font-size: 0.9rem; color: var(--slate); margin: 0; }
-
-        .content-box { text-align: left; max-width: 900px; margin: 0 auto; }
-        .content-box h3 { color: var(--gold); font-family: 'Playfair Display', serif; margin-top: 2rem; }
+        .box-list { background: rgba(197, 160, 89, 0.03); padding: 3rem; border: 1px solid var(--border); border-radius: 4px; text-align: left; }
+        .box-list li { margin-bottom: 1.2rem; padding-left: 2rem; position: relative; color: var(--slate); list-style: none; font-size: 1.05rem; }
+        .box-list li::before { content: '✓'; position: absolute; left: 0; color: var(--gold); font-weight: 700; }
 
         .cta-box { background: rgba(197, 160, 89, 0.05); border: 1px solid var(--gold); padding: 3rem; margin: 4rem 0; display: flex; justify-content: space-between; align-items: center; border-radius: 4px; }
         .btn-main { background: var(--gold); color: var(--navy); padding: 1.2rem 3rem; font-weight: 700; text-decoration: none; text-transform: uppercase; border-radius: 2px; transition: 0.3s; }
@@ -57,52 +51,33 @@
     <section class="no-border">
         <h1>LEVEL THE PLAYING FIELD.<br>AUTOMATE YOUR ADVANTAGE.</h1>
         <div class="tagline">DETERMINISTIC LEGAL NAVIGATION</div>
-        <p style="font-size: 1.2rem; color: var(--slate); max-width: 850px; margin: 0 auto;">
-            The court is a logic-gate system. Most people lose because they fight with feelings. <br><span style="color:var(--white)">We give you the answers written in data.</span>
+        <p style="font-size: 1.3rem; color: var(--slate); max-width: 850px; margin: 0 auto;">
+            The court system is a machine. When things feel out of control, the only way forward is through order. <br><span style="color:var(--white)">We provide the technical foundation. You lead the way.</span>
         </p>
     </section>
 
     <section>
-        <h2>The Capabilities Matrix</h2>
-        <div class="matrix">
-            <div class="matrix-item">
-                <h4>9³ Case Dynamics</h4>
-                <p>Quantify Evidence Weight, Procedural Health, and Adversarial Pressure into a real-time X/Y/Z vector.</p>
-            </div>
-            <div class="matrix-item">
-                <h4>Grey Rock Guardrails</h4>
-                <p>Automated JADE filtering strips emotional markers from drafts to maintain court-ready neutrality.</p>
-            </div>
-            <div class="matrix-item">
-                <h4>Merkle DAG Ledger</h4>
-                <p>Cryptographic exhibit hashing creates a tamper-evident audit trail that guarantees evidence integrity.</p>
-            </div>
-            <div class="matrix-item">
-                <h4>Scrutiny Analytics</h4>
-                <p>Automated detection of gatekeeping, litigation abuse, and disparagement patterns in opposing filings.</p>
-            </div>
-            <div class="matrix-item">
-                <h4>UPL Compliance</h4>
-                <p>Built-in risk scoring ensures your work remains factual and protected, avoiding unauthorized practice of law.</p>
-            </div>
-            <div class="matrix-item">
-                <h4>Local-First Sovereignty</h4>
-                <p>Zero-cloud architecture. Your data, strategy, and privilege remain locked on your physical hardware.</p>
-            </div>
+        <h2>The V1.0.0 Arsenal</h2>
+        <div class="box-list">
+            <ul>
+                <li><strong>Deterministic Case Dynamics:</strong> Turn confusion into structure. Map Evidence Weight, Procedural Health, and Adversarial Pressure through 3-axis X/Y/Z scoring.</li>
+                <li><strong>Grey Rock Guardrails:</strong> JADE-aware filtering to strip emotional triggers and keep your communication factual and court-ready.</li>
+                <li><strong>Merkle Integrity Ledger:</strong> Secure your exhibits in a tamper-evident audit trail for total cryptographic confidence in your data.</li>
+                <li><strong>Behavioral Pattern Scan:</strong> Automate the detection of gatekeeping, disparagement, and litigation abuse markers.</li>
+                <li><strong>Absolute Data Sovereignty:</strong> Local-first architecture ensure your data never leaves your machine and your strategy remains private.</li>
+            </ul>
         </div>
     </section>
 
     <section>
-        <h2>Strategic Answers</h2>
-        <div class="content-box">
-            <h3>How do I prove bad faith?</h3>
-            <p>SynJuris utilizes a <strong>Behavioral Pattern Scan</strong> to flag documented instances of stonewalling and gatekeeping. It turns a "he-said-she-said" argument into a quantified pressure delta on the Z-axis of your case.</p>
-
-            <h3>How do I stay safe with AI?</h3>
-            <p>Cloud AI is a liability. SynJuris operates a <strong>Safe-AI Workstation</strong> locally. By eliminating third-party transmission, you retain Work-Product Privilege that generic tools instantly destroy.</p>
-
-            <h3>How do I know if I'm ready?</h3>
-            <p>The <strong>Document Readiness Engine</strong> audits your files against jurisdictional standards for all 50 states. It tells you what is missing—from evidence density to party contact info—before you ever hit the courthouse.</p>
+        <h2>A Private Environment for Clarity.</h2>
+        <div style="text-align: left; max-width: 850px; margin: 0 auto;">
+            <p style="font-size: 1.1rem; color: var(--slate); margin-bottom: 2rem;">
+                When you're navigating high-stakes litigation, the greatest risk is being overwhelmed by the noise of the process. SynJuris replaces that noise with a <span style="color:var(--white); font-weight:600;">private intelligence node</span> that you own and operate. 
+            </p>
+            <p style="font-size: 1.1rem; color: var(--slate);">
+                This is a one-time acquisition for a permanent technical defense. No monthly fees, no cloud-dependency, and no data leaks. Stop reacting to the chaos and start navigating with the machine.
+            </p>
         </div>
     </section>
 
@@ -113,9 +88,8 @@
                 <div style="font-size: 2.5rem; font-weight: 700;">$49.00</div>
                 <div style="font-size: 0.8rem; color: var(--slate);">LIFETIME ACCESS // PERMANENT BINARY</div>
             </div>
-            <a href="#" class="btn-main">Claim Your Advantage</a>
+            <a href="#" class="btn-main">Acquire Your Advantage</a>
         </div>
-        <p style="color: #444; font-size: 0.7rem; margin-top: 2rem;">Foundational Release holder intelligence reports encouraged via <span style="color:var(--gold)">intelligence@synjuris.com</span>.</p>
     </section>
 
     <footer>
